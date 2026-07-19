@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { View, StyleSheet } from "react-native";
 import { Map, Camera, ViewAnnotation } from "@maplibre/maplibre-react-native"
+import { RequetLocationPermission } from "../permissions/locationPermission";
 
 
 export default function MapScreen() {
@@ -10,7 +11,21 @@ export default function MapScreen() {
         lng: 68.3578,
         lat: 25.3960,
 
+
     }
+    async function getCurrentLocation() {
+        const status = await RequetLocationPermission()
+        if (!status) {
+            return;
+        }
+
+
+
+    }
+
+    useEffect(() => {
+        getCurrentLocation()
+    }, [])
     return (
         <View style={Style.container}>
 
