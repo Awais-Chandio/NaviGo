@@ -4,27 +4,34 @@ import { Map, Camera, ViewAnnotation } from '@maplibre/maplibre-react-native';
 import { RequestLocationPermission } from '../permissions/locationPermission';
 import Geolocation from 'react-native-geolocation-service';
 
-export default function MapScreen() {
-  type userLocationType={
+type userLocationType={
     coords:{
         longitude:number;
         latitude:number;
     }
   }  
-  const [userLocation, setUserLocation] = useState<userLocationType | null>(null);
-  const place = {
-    id: '1',
-    name: 'Hyderabad',
-    lng: 68.3578,
-    lat: 25.396,
-  };
+export default function MapScreen() {
 
+  const [userLocation, setUserLocation] = useState<userLocationType>({
+    coords:{
+        longitude:68.3578,
+        latitude:25.396,
+    }
+  });
+  
   async function getCurrentLocation() {
     const status = await RequestLocationPermission();
     if (!status) {
+
       return;
     }
     Geolocation.getCurrentPosition((position)=>{
+      setUserLocation({
+        coords:{
+          latitude:position.coords.latitude,
+          longitude:position.coords.longitude,
+        },
+      })
         console.log(position)
     }, (error)=>{
         console.log(error.code, error.message)
@@ -39,7 +46,7 @@ export default function MapScreen() {
 
   useEffect(() => {
     getCurrentLocation();
-  }, []);
+  }, []); 
 
   return (
     <View style={styles.container}>
@@ -47,8 +54,9 @@ export default function MapScreen() {
         style={styles.map}
         mapStyle={'https://tiles.openfreemap.org/styles/bright'}
       >
-        <Camera center={[68.3578, 25.396]} zoom={14} />
-        <ViewAnnotation id={place.id} lngLat={[place.lng, place.lat]}>
+        <Camera center={[ userLocation.coords.longitude,
+    userLocation.coords.latitude,]} zoom={14} />
+        <ViewAnnotation id="Current-Location" lngLat={[userLocation.coords.longitude,userLocation.coords.latitude]}>
           <View style={styles.markerContainer}>
             <View style={styles.markerDot} />
           </View>
