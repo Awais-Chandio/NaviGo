@@ -1,6 +1,6 @@
-import { useEffect,useState } from 'react';
+import { useEffect,useState,useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { Map, Camera, ViewAnnotation } from '@maplibre/maplibre-react-native';
+import { Map, Camera, ViewAnnotation, } from '@maplibre/maplibre-react-native';
 import { RequestLocationPermission } from '../permissions/locationPermission';
 import Geolocation from 'react-native-geolocation-service';
 
@@ -11,7 +11,8 @@ type userLocationType={
     }
   }  
 export default function MapScreen() {
-
+  const cameraRef = useRef(null);
+  
   const [userLocation, setUserLocation] = useState<userLocationType>({
     coords:{
         longitude:68.3578,
@@ -54,8 +55,8 @@ export default function MapScreen() {
         style={styles.map}
         mapStyle={'https://tiles.openfreemap.org/styles/bright'}
       >
-        <Camera center={[ userLocation.coords.longitude,
-    userLocation.coords.latitude,]} zoom={14} />
+        <Camera 
+        ref={cameraRef} zoom={14} />
         <ViewAnnotation id="Current-Location" lngLat={[userLocation.coords.longitude,userLocation.coords.latitude]}>
           <View style={styles.markerContainer}>
             <View style={styles.markerDot} />
