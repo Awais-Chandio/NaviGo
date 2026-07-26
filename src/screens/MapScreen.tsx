@@ -1,53 +1,116 @@
-import { useEffect,useState,useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Map, Camera, ViewAnnotation, } from '@maplibre/maplibre-react-native';
 import { RequestLocationPermission } from '../permissions/locationPermission';
 import Geolocation from 'react-native-geolocation-service';
 
-type userLocationType={
-    coords:{
-        longitude:number;
-        latitude:number;
-    }
-  }  
+type userLocationType = {
+  coords: {
+    longitude: number;
+    latitude: number;
+    accuracy: number;
+  }
+}
 export default function MapScreen() {
-  const cameraRef = useRef(null);
-  
+  const cameraRef = useRef<any>(null);
+  const watchId = useRef<any>(null);
+
   const [userLocation, setUserLocation] = useState<userLocationType>({
-    coords:{
-        longitude:68.3578,
-        latitude:25.396,
+    coords: {
+      longitude: 68.3578,
+      latitude: 25.396,
+      accuracy: 0
     }
   });
-  
+
   async function getCurrentLocation() {
     const status = await RequestLocationPermission();
     if (!status) {
 
       return;
     }
-    Geolocation.getCurrentPosition((position)=>{
+
+
+    Geolocation.getCurrentPosition((position) => {
       setUserLocation({
-        coords:{
-          latitude:position.coords.latitude,
-          longitude:position.coords.longitude,
+        coords: {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy
         },
       })
-        console.log(position)
-    }, (error)=>{
-        console.log(error.code, error.message)
+      cameraRef.current?.setCamera({
+        centerCoordinate: [
+          position.coords.longitude,
+          position.coords.latitude
+        ],
+        zoom: 14,
+        animationDuration: 1000,
+      });
+      console.log(position)
+      startWatchingLocation();
+    }, (error) => {
+      console.log(error.code, error.message)
     },
-     {
+      {
         enableHighAccuracy: true,
         timeout: 15000,
         maximumAge: 0,
-     }
-)
+      }
+    )
   }
 
+  function startWatchingLocation() {
+    watchId.current = Geolocation.watchPosition(
+      (position) => {
+        setUserLocation({
+          coords: {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy
+          }
+        });
+        cameraRef.current?.setCamera({
+          centerCoordinate: [
+            position.coords.longitude,
+            position.coords.latitude
+          ],
+          zoom: 14,
+          animationDuration: 1000,
+        });
+
+      },
+
+      (error) => {
+        console.log(
+          "Location Error:",
+          error.code,
+          error.message
+        );
+      },
+
+      {
+        enableHighAccuracy: true,
+        distanceFilter: 5,
+        interval: 3000,
+        fastestInterval: 2000,
+      }
+    );
+  }
   useEffect(() => {
     getCurrentLocation();
-  }, []); 
+
+    return () => {
+
+      if (watchId.current !== null) {
+        Geolocation.clearWatch(watchId.current);
+      }
+
+    };
+
+
+
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -55,9 +118,15 @@ export default function MapScreen() {
         style={styles.map}
         mapStyle={'https://tiles.openfreemap.org/styles/bright'}
       >
-        <Camera 
-        ref={cameraRef} zoom={14} />
-        <ViewAnnotation id="Current-Location" lngLat={[userLocation.coords.longitude,userLocation.coords.latitude]}>
+        <Camera
+          ref={cameraRef}
+          center={[
+            userLocation.coords.longitude,
+            userLocation.coords.latitude
+          ]}
+          zoom={14}
+        />
+        <ViewAnnotation id="Current-Location" lngLat={[userLocation.coords.longitude, userLocation.coords.latitude]}>
           <View style={styles.markerContainer}>
             <View style={styles.markerDot} />
           </View>
