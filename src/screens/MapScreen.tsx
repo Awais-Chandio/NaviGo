@@ -66,6 +66,8 @@ export default function MapScreen() {
         distanceFilter: 5,
         interval: 3000,
         fastestInterval: 2000,
+        forceRequestLocation: true,
+        showLocationDialog: true,
       },
     );
   }
@@ -79,6 +81,7 @@ export default function MapScreen() {
         {
           headers: {
             Accept: 'application/json',
+            'User-Agent': 'MyPlacesTracker/1.0',
           },
         },
       );
@@ -126,8 +129,10 @@ export default function MapScreen() {
       {
         enableHighAccuracy: true,
         timeout: 15000,
-        maximumAge: 0,
+        maximumAge: 10000,
         distanceFilter: 5,
+        forceRequestLocation: true,
+        showLocationDialog: true,
       },
     );
   }
@@ -154,7 +159,14 @@ export default function MapScreen() {
         style={styles.map}
         mapStyle={'https://tiles.openfreemap.org/styles/bright'}
       >
-        <Camera ref={cameraRef} zoom={14} />
+        <Camera
+          ref={cameraRef}
+          zoom={14}
+          center={[
+            userLocation.coords.longitude,
+            userLocation.coords.latitude,
+          ]}
+        />
         <ViewAnnotation
           id="Current-Location"
           lngLat={[userLocation.coords.longitude, userLocation.coords.latitude]}
