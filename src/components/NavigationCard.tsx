@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   Pressable,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationState, DestinationInfo } from '../hooks/useNavigation';
 
 interface NavigationCardProps {
@@ -29,12 +31,37 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
   onStartNavigation,
   onCancelNavigation,
 }) => {
+  const insets = useSafeAreaInsets();
+  const slideAnim = useRef(new Animated.Value(200)).current;
+
+  useEffect(() => {
+    if (destination && navigationState !== 'idle') {
+      Animated.spring(slideAnim, {
+        toValue: 0,
+        tension: 50,
+        friction: 8,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      slideAnim.setValue(200);
+    }
+  }, [destination, navigationState, slideAnim]);
+
   if (!destination || navigationState === 'idle') return null;
 
   const isNavigating = navigationState === 'navigating';
+  const dynamicBottom = Math.max(insets.bottom + 12, 16);
 
   return (
-    <View style={styles.container}>
+    <Animated.View
+      style={[
+        styles.container,
+        { bottom: dynamicBottom, transform: [{ translateY: slideAnim }] },
+      ]}
+    >
+      {/* Top Handle Bar for Bottom Sheet aesthetic */}
+      <View style={styles.sheetHandleBar} />
+
       {/* Active Navigation Header Instruction Banner */}
       {isNavigating && (
         <View style={styles.instructionBanner}>
@@ -71,16 +98,19 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
         </View>
 
         <View style={styles.metricBadge}>
-          <Text style={styles.metricLabel}>Remaining Time</Text>
+          <Text style={styles.metricLabel}>ETA / Duration</Text>
           <Text style={styles.metricValueHighlight}>{formattedDuration}</Text>
         </View>
       </View>
 
-      {/* Action Button for Route Ready Mode */}
+      {/* Action Button for Route Ready Mode / Loading State */}
       {navigationState === 'route_ready' && (
         <View style={styles.actionRow}>
           {isLoadingRoute ? (
-            <ActivityIndicator size="small" color="#1a73e8" />
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="small" color="#1a73e8" />
+              <Text style={styles.loadingText}>Calculating best route...</Text>
+            </View>
           ) : (
             <Pressable
               onPress={onStartNavigation}
@@ -95,31 +125,41 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
           )}
         </View>
       )}
-    </View>
+    </Animated.View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: 20,
     left: 16,
     right: 16,
+    maxWidth: 600,
+    alignSelf: 'center',
+    width: '92%',
     backgroundColor: '#ffffff',
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 16,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.22,
-    shadowRadius: 8,
+    shadowRadius: 10,
     elevation: 8,
     zIndex: 20,
+  },
+  sheetHandleBar: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#e0e0e0',
+    alignSelf: 'center',
+    marginBottom: 10,
   },
   instructionBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1a73e8',
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 12,
     marginBottom: 12,
   },
@@ -168,7 +208,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     backgroundColor: '#f8f9fa',
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 12,
   },
   metricBadge: {
@@ -192,6 +232,18 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     marginTop: 12,
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 12,
+    gap: 10,
+  },
+  loadingText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1a73e8',
   },
   startButton: {
     flexDirection: 'row',

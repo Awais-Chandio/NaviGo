@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationStep } from '../services/routingService';
 
 interface TurnInstructionCardProps {
@@ -11,10 +12,13 @@ export const TurnInstructionCard: React.FC<TurnInstructionCardProps> = ({
   currentStep,
   distanceToStep,
 }) => {
+  const insets = useSafeAreaInsets();
   if (!currentStep) return null;
 
+  const dynamicTop = Math.max(insets.top + 10, 16);
+
   return (
-    <View style={styles.bannerContainer}>
+    <View style={[styles.bannerContainer, { top: dynamicTop }]}>
       <View style={styles.iconContainer}>
         <Text style={styles.maneuverIcon}>{currentStep.iconSymbol || '↑'}</Text>
       </View>
@@ -34,9 +38,11 @@ export const TurnInstructionCard: React.FC<TurnInstructionCardProps> = ({
 const styles = StyleSheet.create({
   bannerContainer: {
     position: 'absolute',
-    top: 50,
     left: 16,
     right: 16,
+    maxWidth: 600,
+    alignSelf: 'center',
+    width: '92%',
     zIndex: 30,
     backgroundColor: '#0d652d', // Google Maps dark green navigation banner color
     borderRadius: 14,

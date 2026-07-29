@@ -8,6 +8,7 @@ import {
   Pressable,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { geocodingService } from '../services/geocodingService';
 import { type SearchPlaceItem } from '../services/searchService';
 import { SavedPlace } from '../services/storageService';
@@ -30,6 +31,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   onSelectPlace,
   onSelectSavedPlace,
 }) => {
+  const insets = useSafeAreaInsets();
   const [searchText, setSearchText] = useState<string>('');
   const [searchResults, setSearchResults] = useState<SearchPlaceItem[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
@@ -115,7 +117,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   };
 
   return (
-    <View style={styles.searchCard}>
+    <View style={[styles.searchCard, { top: Math.max(insets.top + 10, 16) }]}>
       <View style={styles.searchInputRow}>
         <Text style={styles.searchIcon}>🔍</Text>
         <TextInput
@@ -245,9 +247,11 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 const styles = StyleSheet.create({
   searchCard: {
     position: 'absolute',
-    top: 20,
     left: 16,
     right: 16,
+    maxWidth: 600,
+    alignSelf: 'center',
+    width: '92%',
     zIndex: 10,
     backgroundColor: '#ffffff',
     borderRadius: 12,

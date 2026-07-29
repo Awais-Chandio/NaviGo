@@ -12,6 +12,7 @@ import { MapControls } from '../components/MapControls';
 import { ErrorToast } from '../components/ErrorToast';
 import { UserMarker } from '../components/UserMarker';
 import { DestinationMarker } from '../components/DestinationMarker';
+import { AccuracyCircle } from '../components/AccuracyCircle';
 import { RouteLine } from '../components/RouteLine';
 import { SearchPlaceItem } from '../services/searchService';
 import { SavedPlace } from '../services/storageService';
@@ -26,6 +27,8 @@ export default function MapScreen() {
   // Map Tile & Custom Hooks
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isFollowingUser, setIsFollowingUser] = useState<boolean>(true);
+  const [currentZoom, setCurrentZoom] = useState<number>(15);
 
   const { location, refreshLocation } = useLocation();
   const { recentSearches, savedPlaces, addRecentSearch } = useSavedPlaces();
@@ -47,7 +50,7 @@ export default function MapScreen() {
     handleLocationUpdate,
   } = useNavigation();
 
-  // Forward live location updates to navigation engine
+  // Forward live location updates to navigation engine and follow user
   useEffect(() => {
     if (location.latitude && location.longitude) {
       handleLocationUpdate(
@@ -56,18 +59,25 @@ export default function MapScreen() {
         location.heading,
       );
 
-      // Turn-by-Turn Navigating 3D Camera Mode
-      if (navigationState === 'navigating' && cameraRef.current) {
-        cameraRef.current.flyTo({
-          center: [location.longitude, location.latitude],
-          zoom: 17.5,
-          pitch: 50,
-          bearing: currentBearing,
-          duration: 1000,
-        });
+      // Camera follow behavior during navigation or live tracking
+      if (isFollowingUser && cameraRef.current) {
+        if (navigationState === 'navigating') {
+          cameraRef.current.flyTo({
+            center: [location.longitude, location.latitude],
+            zoom: 17.5,
+            pitch: 50,
+            bearing: currentBearing,
+            duration: 1000,
+          });
+        } else {
+          cameraRef.current.easeTo({
+            center: [location.longitude, location.latitude],
+            duration: 800,
+          });
+        }
       }
     }
-  }, [currentBearing, handleLocationUpdate, location, navigationState]);
+  }, [currentBearing, handleLocationUpdate, isFollowingUser, location, navigationState]);
 
   // Fit camera bounds when route becomes ready
   useEffect(() => {
@@ -81,8 +91,18 @@ export default function MapScreen() {
         padding: { top: 100, right: 60, bottom: 240, left: 60 },
         duration: 1200,
       });
+      setIsFollowingUser(false);
     }
   }, [navigationState, routeDetails]);
+
+  /**
+   * Stop camera auto-follow when user touches / moves the map manually
+   */
+  const handleMapTouch = useCallback(() => {
+    if (isFollowingUser) {
+      setIsFollowingUser(false);
+    }
+  }, [isFollowingUser]);
 
   /**
    * Select place suggestion handler
@@ -122,13 +142,13 @@ export default function MapScreen() {
     if (cameraRef.current) {
       cameraRef.current.easeTo({
         center: [location.longitude, location.latitude],
-        zoom: 15,
+        zoom: currentZoom,
         pitch: 0,
         bearing: 0,
         duration: 1000,
       });
     }
-  }, [location.latitude, location.longitude]);
+  }, [currentZoom, location.latitude, location.longitude]);
 
   /**
    * Toggle Map Tile Theme (Light / Dark)
@@ -138,12 +158,51 @@ export default function MapScreen() {
   }, []);
 
   /**
-   * Recenter Camera to User Position
+   * Recenter Camera to User Position & resume tracking
    */
   const handleRecenter = useCallback(() => {
+    setIsFollowingUser(true);
     refreshLocation();
-    handleResetCompass();
-  }, [handleResetCompass, refreshLocation]);
+    if (cameraRef.current) {
+      cameraRef.current.flyTo({
+        center: [location.longitude, location.latitude],
+        zoom: navigationState === 'navigating' ? 17.5 : 15,
+        pitch: navigationState === 'navigating' ? 50 : 0,
+        bearing: navigationState === 'navigating' ? currentBearing : 0,
+        duration: 1000,
+      });
+    }
+  }, [currentBearing, location.latitude, location.longitude, navigationState, refreshLocation]);
+
+  /**
+   * Zoom In handler
+   */
+  const handleZoomIn = useCallback(() => {
+    const nextZoom = Math.min(currentZoom + 1, 20);
+    setCurrentZoom(nextZoom);
+    if (cameraRef.current) {
+      cameraRef.current.easeTo({
+        center: [location.longitude, location.latitude],
+        zoom: nextZoom,
+        duration: 300,
+      });
+    }
+  }, [currentZoom, location.latitude, location.longitude]);
+
+  /**
+   * Zoom Out handler
+   */
+  const handleZoomOut = useCallback(() => {
+    const nextZoom = Math.max(currentZoom - 1, 2);
+    setCurrentZoom(nextZoom);
+    if (cameraRef.current) {
+      cameraRef.current.easeTo({
+        center: [location.longitude, location.latitude],
+        zoom: nextZoom,
+        duration: 300,
+      });
+    }
+  }, [currentZoom, location.latitude, location.longitude]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -183,7 +242,15 @@ export default function MapScreen() {
       <Map
         style={styles.map}
         mapStyle={isDarkMode ? DARK_MAP_STYLE : LIGHT_MAP_STYLE}
+        onTouchStart={handleMapTouch}
       >
+        {/* Location Accuracy Circle */}
+        <AccuracyCircle
+          longitude={location.longitude}
+          latitude={location.latitude}
+          accuracy={location.accuracy}
+        />
+
         {/* Polyline Route Layer */}
         {routeDetails && (
           <RouteLine coordinates={routeDetails.coordinates} />
@@ -192,7 +259,7 @@ export default function MapScreen() {
         {/* Camera */}
         <Camera
           ref={cameraRef}
-          zoom={15}
+          zoom={currentZoom}
           center={[location.longitude, location.latitude]}
         />
 
@@ -213,14 +280,17 @@ export default function MapScreen() {
         )}
       </Map>
 
-      {/* Floating Map Control Stack (Compass, Dark Mode, Recenter) */}
+      {/* Floating Map Control Stack (Zoom, Compass, Dark Mode, Recenter) */}
       <MapControls
         bearing={currentBearing}
         isDarkMode={isDarkMode}
         hasDestination={destination !== null}
+        isFollowingUser={isFollowingUser}
         onResetCompass={handleResetCompass}
         onToggleMapStyle={handleToggleMapStyle}
         onRecenter={handleRecenter}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
       />
 
       {/* Bottom Route Summary & Turn-by-Turn Navigation Panel */}
