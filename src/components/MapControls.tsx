@@ -5,11 +5,9 @@ import PersonPinCircle from '../assets/icons/personPinCircle.svg';
 
 interface MapControlsProps {
   bearing: number;
-  isDarkMode: boolean;
   hasDestination: boolean;
   isFollowingUser?: boolean;
   onResetCompass: () => void;
-  onToggleMapStyle: () => void;
   onRecenter: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -17,11 +15,9 @@ interface MapControlsProps {
 
 export const MapControls: React.FC<MapControlsProps> = ({
   bearing,
-  isDarkMode,
   hasDestination,
   isFollowingUser = true,
   onResetCompass,
-  onToggleMapStyle,
   onRecenter,
   onZoomIn,
   onZoomOut,
@@ -34,7 +30,7 @@ export const MapControls: React.FC<MapControlsProps> = ({
 
   return (
     <View style={[styles.container, { bottom: dynamicBottom }]}>
-      {/* Zoom In */}
+      {/* 1. Zoom In Button */}
       <Pressable
         accessibilityLabel="Zoom In"
         style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
@@ -43,7 +39,7 @@ export const MapControls: React.FC<MapControlsProps> = ({
         <Text style={styles.zoomText}>＋</Text>
       </Pressable>
 
-      {/* Zoom Out */}
+      {/* 2. Zoom Out Button */}
       <Pressable
         accessibilityLabel="Zoom Out"
         style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
@@ -52,7 +48,7 @@ export const MapControls: React.FC<MapControlsProps> = ({
         <Text style={styles.zoomText}>－</Text>
       </Pressable>
 
-      {/* Compass Needle (Resets bearing/pitch) */}
+      {/* 3. Compass Button (Resets map rotation to North) */}
       <Pressable
         accessibilityLabel="Reset Compass Bearing"
         style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
@@ -63,16 +59,7 @@ export const MapControls: React.FC<MapControlsProps> = ({
         </View>
       </Pressable>
 
-      {/* Theme Switcher */}
-      <Pressable
-        accessibilityLabel="Toggle Dark Mode"
-        style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
-        onPress={onToggleMapStyle}
-      >
-        <Text style={styles.btnIcon}>{isDarkMode ? '☀️' : '🌙'}</Text>
-      </Pressable>
-
-      {/* Google Maps Style Single Recenter Button */}
+      {/* 4. Recenter Button (Recenter camera on live GPS location) */}
       <Pressable
         accessibilityLabel="Re-center location"
         style={({ pressed }) => [
@@ -130,9 +117,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '700',
     color: '#202124',
-  },
-  btnIcon: {
-    fontSize: 20,
   },
   compassText: {
     fontSize: 22,

@@ -25,7 +25,6 @@ export default function MapScreen() {
   const cameraRef = useRef<CameraRef>(null);
 
   // Map Tile & Custom Hooks
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFollowingUser, setIsFollowingUser] = useState<boolean>(true);
   const [currentZoom, setCurrentZoom] = useState<number>(15);
@@ -151,13 +150,6 @@ export default function MapScreen() {
   }, [currentZoom, location.latitude, location.longitude]);
 
   /**
-   * Toggle Map Tile Theme (Light / Dark)
-   */
-  const handleToggleMapStyle = useCallback(() => {
-    setIsDarkMode(prev => !prev);
-  }, []);
-
-  /**
    * Recenter Camera to User Position & resume tracking
    */
   const handleRecenter = useCallback(() => {
@@ -207,8 +199,8 @@ export default function MapScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={isDarkMode ? '#121212' : '#ffffff'}
+        barStyle={'dark-content'}
+        backgroundColor={'#ffffff'}
       />
 
       {/* Floating Network / GPS Error Toast */}
@@ -241,7 +233,7 @@ export default function MapScreen() {
       {/* Main Map Component */}
       <Map
         style={styles.map}
-        mapStyle={isDarkMode ? DARK_MAP_STYLE : LIGHT_MAP_STYLE}
+        mapStyle={LIGHT_MAP_STYLE}
         onTouchStart={handleMapTouch}
       >
         {/* Location Accuracy Circle */}
@@ -280,14 +272,12 @@ export default function MapScreen() {
         )}
       </Map>
 
-      {/* Floating Map Control Stack (Zoom, Compass, Dark Mode, Recenter) */}
+      {/* Floating Map Control Stack */}
       <MapControls
         bearing={currentBearing}
-        isDarkMode={isDarkMode}
         hasDestination={destination !== null}
         isFollowingUser={isFollowingUser}
         onResetCompass={handleResetCompass}
-        onToggleMapStyle={handleToggleMapStyle}
         onRecenter={handleRecenter}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
