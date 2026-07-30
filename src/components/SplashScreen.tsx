@@ -4,9 +4,10 @@ import {
   Text,
   StyleSheet,
   Animated,
-  Image,
   useWindowDimensions,
 } from 'react-native';
+
+import PersonPinCircle from '../assets/icons/personPinCircle.svg';
 
 interface SplashScreenProps {
   onFinish: () => void;
@@ -15,14 +16,12 @@ interface SplashScreenProps {
 export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
   const { width } = useWindowDimensions();
 
-  // Animation drivers (native driver enabled)
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.7)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const exitFadeAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    // 1. Entrance parallel animation (Scale + Fade In)
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -37,7 +36,6 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
       }),
     ]).start();
 
-    // 2. Continuous subtle pulse animation
     const pulseLoop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
@@ -54,7 +52,6 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
     );
     pulseLoop.start();
 
-    // 3. Exit animation after 2.2 seconds
     const timer = setTimeout(() => {
       pulseLoop.stop();
       Animated.timing(exitFadeAnim, {
@@ -69,7 +66,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
     return () => clearTimeout(timer);
   }, [exitFadeAnim, fadeAnim, onFinish, pulseAnim, scaleAnim]);
 
-  const logoSize = Math.min(width * 0.38, 160);
+  const logoSize = Math.min(width * 0.38, 120);
 
   return (
     <Animated.View style={[styles.container, { opacity: exitFadeAnim }]}>
@@ -82,28 +79,24 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
           },
         ]}
       >
-        {/* Animated Icon Container */}
         <Animated.View
           style={[
             styles.iconWrapper,
             { transform: [{ scale: pulseAnim }] },
           ]}
         >
-          <Image
-            source={require('../assets/icons/personPinCircle.svg')} // fallback or vector badge
-            style={{ width: logoSize, height: logoSize }}
-            resizeMode="contain"
+          <PersonPinCircle
+            width={logoSize}
+            height={logoSize}
+            fill="#38bdf8"
+            stroke="#ffffff"
+            strokeWidth={1}
           />
-          <View style={styles.iconOverlayPin}>
-            <Text style={styles.pinEmoji}>🧭</Text>
-          </View>
         </Animated.View>
 
-        {/* App Title & Subtitle */}
         <Text style={styles.title}>NaviGo</Text>
         <Text style={styles.subtitle}>Smart Turn-by-Turn Navigation</Text>
 
-        {/* Loading indicator dots bar */}
         <View style={styles.loaderBar}>
           <View style={styles.loaderDot} />
           <View style={[styles.loaderDot, styles.loaderDotActive]} />

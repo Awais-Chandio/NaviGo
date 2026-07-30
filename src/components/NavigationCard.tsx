@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationState, DestinationInfo } from '../hooks/useNavigation';
+import { voiceService } from '../services/voiceService';
 
 interface NavigationCardProps {
   navigationState: NavigationState;
@@ -16,6 +17,7 @@ interface NavigationCardProps {
   isLoadingRoute: boolean;
   formattedDistance: string;
   formattedDuration: string;
+  remainingDurationSeconds?: number;
   nextInstruction: string;
   onStartNavigation: () => void;
   onCancelNavigation: () => void;
@@ -27,12 +29,14 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
   isLoadingRoute,
   formattedDistance,
   formattedDuration,
+  remainingDurationSeconds = 0,
   nextInstruction,
   onStartNavigation,
   onCancelNavigation,
 }) => {
   const insets = useSafeAreaInsets();
   const slideAnim = useRef(new Animated.Value(200)).current;
+  const [isMuted, setIsMuted] = useState<boolean>(voiceService.isMuted());
 
   useEffect(() => {
     if (destination && navigationState !== 'idle') {
@@ -47,6 +51,18 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
     }
   }, [destination, navigationState, slideAnim]);
 
+  const handleToggleVoice = () => {
+    const nextMuted = !isMuted;
+    voiceService.setMuted(nextMuted);
+    setIsMuted(nextMuted);
+  };
+
+  const estimatedETA = useMemo(() => {
+    if (!remainingDurationSeconds || remainingDurationSeconds <= 0) return '--:--';
+    const etaDate = new Date(Date.now() + remainingDurationSeconds * 1000);
+    return etaDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }, [remainingDurationSeconds]);
+
   if (!destination || navigationState === 'idle') return null;
 
   const isNavigating = navigationState === 'navigating';
@@ -59,10 +75,8 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
         { bottom: dynamicBottom, transform: [{ translateY: slideAnim }] },
       ]}
     >
-      {/* Top Handle Bar for Bottom Sheet aesthetic */}
       <View style={styles.sheetHandleBar} />
 
-      {/* Active Navigation Header Instruction Banner */}
       {isNavigating && (
         <View style={styles.instructionBanner}>
           <Text style={styles.instructionIcon}>🏎️</Text>
@@ -72,25 +86,31 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
         </View>
       )}
 
-      {/* Main Destination Info Header */}
       <View style={styles.cardHeader}>
         <View style={styles.titleColumn}>
-          <Text style={styles.destTitle} numberOfLines={1}>
-            {destination.title}
-          </Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.destTitle} numberOfLines={1}>
+              {destination.title}
+            </Text>
+          </View>
           <Text style={styles.destSubtitle} numberOfLines={1}>
             {destination.subtitle}
           </Text>
         </View>
 
-        <Pressable onPress={onCancelNavigation} style={styles.closeButton}>
-          <Text style={styles.closeButtonText}>
-            {isNavigating ? 'Exit' : 'Clear'}
-          </Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable onPress={handleToggleVoice} style={styles.iconButton}>
+            <Text style={styles.iconButtonText}>{isMuted ? '🔇' : '🔊'}</Text>
+          </Pressable>
+
+          <Pressable onPress={onCancelNavigation} style={styles.closeButton}>
+            <Text style={styles.closeButtonText}>
+              {isNavigating ? 'Exit' : 'Clear'}
+            </Text>
+          </Pressable>
+        </View>
       </View>
 
-      {/* Route Metrics Row */}
       <View style={styles.metricsRow}>
         <View style={styles.metricBadge}>
           <Text style={styles.metricLabel}>Distance</Text>
@@ -98,12 +118,16 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
         </View>
 
         <View style={styles.metricBadge}>
-          <Text style={styles.metricLabel}>ETA / Duration</Text>
+          <Text style={styles.metricLabel}>Est. Duration</Text>
           <Text style={styles.metricValueHighlight}>{formattedDuration}</Text>
+        </View>
+
+        <View style={styles.metricBadge}>
+          <Text style={styles.metricLabel}>Arrival ETA</Text>
+          <Text style={styles.metricValueEta}>{estimatedETA}</Text>
         </View>
       </View>
 
-      {/* Action Button for Route Ready Mode / Loading State */}
       {navigationState === 'route_ready' && (
         <View style={styles.actionRow}>
           {isLoadingRoute ? (
@@ -183,6 +207,10 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: 12,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   destTitle: {
     fontSize: 17,
     fontWeight: '700',
@@ -192,6 +220,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#70757a',
     marginTop: 2,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  iconButton: {
+    backgroundColor: '#f1f3f4',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconButtonText: {
+    fontSize: 16,
   },
   closeButton: {
     backgroundColor: '#f1f3f4',
@@ -221,14 +265,19 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   metricValue: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     color: '#202124',
   },
   metricValueHighlight: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     color: '#1a73e8',
+  },
+  metricValueEta: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#34a853',
   },
   actionRow: {
     marginTop: 12,

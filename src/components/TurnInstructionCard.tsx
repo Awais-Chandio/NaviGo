@@ -44,7 +44,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     width: '92%',
     zIndex: 30,
-    backgroundColor: '#0d652d', // Google Maps dark green navigation banner color
+    backgroundColor: '#0d652d',
     borderRadius: 14,
     padding: 14,
     flexDirection: 'row',

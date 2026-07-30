@@ -18,7 +18,6 @@ class StorageService {
   private asyncStorage: any = null;
 
   constructor() {
-    // Attempt dynamic import of AsyncStorage if installed
     try {
       this.asyncStorage = require('@react-native-async-storage/async-storage').default;
       this.loadFromStorage();
@@ -26,13 +25,12 @@ class StorageService {
       this.asyncStorage = null;
     }
 
-    // Default initial saved places fallback (Home / Work)
     if (this.savedPlaces.size === 0) {
       this.savedPlaces.set('home', {
         id: 'home',
         type: 'home',
         title: 'Home',
-        subtitle: 'Set your home location',
+        subtitle: 'Hyderabad, Sindh, Pakistan',
         latitude: 25.396,
         longitude: 68.3578,
       });
@@ -40,9 +38,41 @@ class StorageService {
         id: 'work',
         type: 'work',
         title: 'Work',
-        subtitle: 'Set your work location',
+        subtitle: 'Karachi Financial Center, Pakistan',
         latitude: 24.8607,
         longitude: 67.0011,
+      });
+      this.savedPlaces.set('centaurus', {
+        id: 'centaurus',
+        type: 'favorite',
+        title: 'Centaurus Mall',
+        subtitle: 'F-8, Islamabad, Pakistan',
+        latitude: 33.7077,
+        longitude: 73.0498,
+      });
+      this.savedPlaces.set('mazar', {
+        id: 'mazar',
+        type: 'favorite',
+        title: 'Mazar-e-Quaid',
+        subtitle: 'M.A. Jinnah Rd, Karachi, Pakistan',
+        latitude: 24.8746,
+        longitude: 67.0399,
+      });
+      this.savedPlaces.set('minar', {
+        id: 'minar',
+        type: 'favorite',
+        title: 'Minar-e-Pakistan',
+        subtitle: 'Greater Iqbal Park, Lahore, Pakistan',
+        latitude: 31.5925,
+        longitude: 74.3095,
+      });
+      this.savedPlaces.set('faisal_mosque', {
+        id: 'faisal_mosque',
+        type: 'favorite',
+        title: 'Faisal Mosque',
+        subtitle: 'Shah Faisal Ave, Islamabad, Pakistan',
+        latitude: 33.7297,
+        longitude: 73.0372,
       });
     }
   }
@@ -89,9 +119,6 @@ class StorageService {
     }
   }
 
-  /**
-   * Adds a search result item to recent searches history (max 10 items).
-   */
   public addRecentSearch(item: SearchPlaceItem): SearchPlaceItem[] {
     this.recentSearches = this.recentSearches.filter(
       r => r.id.toString() !== item.id.toString(),
@@ -114,9 +141,6 @@ class StorageService {
     return [];
   }
 
-  /**
-   * Saves a place as Home, Work, or Favorite.
-   */
   public savePlace(place: SavedPlace): SavedPlace[] {
     this.savedPlaces.set(place.id, place);
     this.persistSavedPlaces();

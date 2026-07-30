@@ -29,10 +29,10 @@ export interface DestinationInfo {
   subtitle: string;
 }
 
-const OFF_ROUTE_THRESHOLD_METERS = 40; // Reroute if >40m off route
-const ARRIVAL_THRESHOLD_METERS = 20; // Arrived if <20m to destination
-const STEP_COMPLETION_THRESHOLD_METERS = 25; // Transition to next step when within 25m of step maneuver location
-const MIN_LOCATION_DELTA_METERS = 1.5; // Throttle math calculations for GPS updates under 1.5m jitter
+const OFF_ROUTE_THRESHOLD_METERS = 40;
+const ARRIVAL_THRESHOLD_METERS = 20;
+const STEP_COMPLETION_THRESHOLD_METERS = 25;
+const MIN_LOCATION_DELTA_METERS = 1.5;
 
 export function useNavigation() {
   const [navigationState, setNavigationState] = useState<NavigationState>('idle');
@@ -40,13 +40,11 @@ export function useNavigation() {
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
   const [isLoadingRoute, setIsLoadingRoute] = useState<boolean>(false);
 
-  // Turn-by-Turn Steps state
   const [navigationSteps, setNavigationSteps] = useState<NavigationStep[]>([]);
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
   const [currentStep, setCurrentStep] = useState<NavigationStep | null>(null);
   const [distanceToStep, setDistanceToStep] = useState<string>('');
 
-  // Dynamic progress state
   const [remainingDistance, setRemainingDistance] = useState<number>(0);
   const [remainingDuration, setRemainingDuration] = useState<number>(0);
   const [currentBearing, setCurrentBearing] = useState<number>(0);
@@ -57,9 +55,6 @@ export function useNavigation() {
   const lastLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
   const lastCalcTimeRef = useRef<number>(0);
 
-  /**
-   * Fetches driving route from user location to destination with turn steps.
-   */
   const fetchRoute = useCallback(
     async (
       originLat: number,
@@ -111,9 +106,6 @@ export function useNavigation() {
     [],
   );
 
-  /**
-   * Sets a destination and transitions to 'route_ready'.
-   */
   const selectDestination = useCallback(
     async (originLat: number, originLng: number, dest: DestinationInfo) => {
       setDestination(dest);
@@ -129,9 +121,6 @@ export function useNavigation() {
     [fetchRoute],
   );
 
-  /**
-   * Starts turn-by-turn navigation mode.
-   */
   const startNavigation = useCallback(() => {
     if (!destination || !routeDetails) return;
     setNavigationState('navigating');
@@ -140,9 +129,6 @@ export function useNavigation() {
     voiceService.speak(activeInstruction);
   }, [currentStep, destination, routeDetails]);
 
-  /**
-   * Cancels active navigation and resets state to 'idle'.
-   */
   const cancelNavigation = useCallback(() => {
     setNavigationState('idle');
     setDestination(null);
@@ -158,15 +144,10 @@ export function useNavigation() {
     voiceService.stop();
   }, []);
 
-  /**
-   * Location progress updates during live tracking.
-   * Throttles jitter, updates bearing, progress metrics, step index progression, off-route rerouting, and arrival.
-   */
   const handleLocationUpdate = useCallback(
     async (userLat: number, userLng: number, userHeading?: number | null) => {
       const now = Date.now();
 
-      // Check distance delta from last location to skip minor GPS jitter (< 1.5m)
       if (lastLocationRef.current) {
         const deltaDist = getHaversineDistance(
           lastLocationRef.current.latitude,
@@ -175,7 +156,6 @@ export function useNavigation() {
           userLng,
         );
 
-        // Throttle rapid sub-second calculations if position barely moved
         if (deltaDist < MIN_LOCATION_DELTA_METERS && now - lastCalcTimeRef.current < 1500) {
           return;
         }
@@ -183,7 +163,6 @@ export function useNavigation() {
 
       lastCalcTimeRef.current = now;
 
-      // Calculate bearing from previous position or GPS heading
       if (typeof userHeading === 'number' && userHeading >= 0) {
         setCurrentBearing(userHeading);
       } else if (lastLocationRef.current) {
@@ -197,12 +176,10 @@ export function useNavigation() {
       }
       lastLocationRef.current = { latitude: userLat, longitude: userLng };
 
-      // Return early if not currently navigating or no destination active
       if (navigationState !== 'navigating' || !destination || !routeDetails) {
         return;
       }
 
-      // 1. Arrival Detection (< 20 meters to destination)
       const distToDest = getHaversineDistance(
         userLat,
         userLng,
@@ -223,7 +200,6 @@ export function useNavigation() {
         return;
       }
 
-      // 2. Off-Route Detection (distance to route > 40m)
       const distToPolyline = getDistanceToRoute(
         userLat,
         userLng,
@@ -244,7 +220,6 @@ export function useNavigation() {
         offRouteCountRef.current = 0;
       }
 
-      // 3. Dynamic Remaining Distance & Duration Calculation
       const remMeters = calculateRemainingDistanceOnRoute(
         userLat,
         userLng,
@@ -253,11 +228,9 @@ export function useNavigation() {
 
       setRemainingDistance(remMeters);
 
-      // Estimate remaining duration (average speed ~30 km/h = 8.33 m/s)
       const estSeconds = Math.round(remMeters / 8.33);
       setRemainingDuration(estSeconds);
 
-      // 4. Current Step Tracking & Automatic Instruction Transition
       if (navigationSteps.length > 0) {
         let activeIndex = currentStepIndex;
         const activeStep = navigationSteps[activeIndex];
@@ -272,7 +245,6 @@ export function useNavigation() {
 
           setDistanceToStep(formatDistance(distToManeuver));
 
-          // Transition to next step when user reaches maneuver location (< 25m)
           if (
             distToManeuver <= STEP_COMPLETION_THRESHOLD_METERS &&
             activeIndex < navigationSteps.length - 1

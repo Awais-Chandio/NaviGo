@@ -1,7 +1,4 @@
-/**
- * Search Service for Places Autocomplete & Reverse Geocoding.
- * Standardized structure allows replacing Nominatim with Google Places or Mapbox easily in the future.
- */
+import { getHaversineDistance, formatDistance } from '../utils/locationUtils';
 
 export interface SearchPlaceItem {
   id: string | number;
@@ -10,6 +7,10 @@ export interface SearchPlaceItem {
   latitude: number;
   longitude: number;
   displayName: string;
+  distanceMeters?: number;
+  formattedDistance?: string;
+  categoryIcon?: string;
+  categoryName?: string;
   raw?: any;
 }
 
@@ -23,18 +24,51 @@ export interface SearchOptions {
   signal?: AbortSignal;
 }
 
-/**
- * Abstract Places Provider interface to allow seamless swap between
- * Nominatim, Google Places API, or Mapbox Places API.
- */
 export interface PlacesProvider {
   searchPlaces(query: string, options?: SearchOptions): Promise<SearchPlaceItem[]>;
   reverseGeocode(latitude: number, longitude: number, signal?: AbortSignal): Promise<string>;
 }
 
-/**
- * Parses raw Nominatim response display_name into a clean title and subtitle.
- */
+export function detectCategory(
+  displayName: string,
+  categoryType?: string,
+): { icon: string; name: string } {
+  const text = (displayName + ' ' + (categoryType || '')).toLowerCase();
+
+  if (text.includes('fuel') || text.includes('gas') || text.includes('petrol') || text.includes('cng') || text.includes('pso') || text.includes('shell') || text.includes('total')) {
+    return { icon: '⛽', name: 'Gas Station' };
+  }
+  if (text.includes('restaurant') || text.includes('food') || text.includes('cafe') || text.includes('biryani') || text.includes('pizza') || text.includes('burger') || text.includes('dining')) {
+    return { icon: '🍔', name: 'Restaurant' };
+  }
+  if (text.includes('hospital') || text.includes('clinic') || text.includes('medical') || text.includes('pharmacy') || text.includes('doctor') || text.includes('health')) {
+    return { icon: '🏥', name: 'Hospital' };
+  }
+  if (text.includes('atm') || text.includes('bank') || text.includes('hbl') || text.includes('mcb') || text.includes('meezan') || text.includes('ubl') || text.includes('cash')) {
+    return { icon: '🏧', name: 'ATM & Bank' };
+  }
+  if (text.includes('hotel') || text.includes('resort') || text.includes('lodging') || text.includes('inn') || text.includes('stay')) {
+    return { icon: '🏨', name: 'Hotel' };
+  }
+  if (text.includes('mall') || text.includes('market') || text.includes('bazaar') || text.includes('shopping') || text.includes('store') || text.includes('supermarket')) {
+    return { icon: '🛒', name: 'Shopping' };
+  }
+  if (text.includes('mosque') || text.includes('masjid') || text.includes('jamia')) {
+    return { icon: '🕌', name: 'Mosque' };
+  }
+  if (text.includes('airport') || text.includes('aerodrome')) {
+    return { icon: '✈️', name: 'Airport' };
+  }
+  if (text.includes('park') || text.includes('garden') || text.includes('ground')) {
+    return { icon: '🏞️', name: 'Park' };
+  }
+  if (text.includes('school') || text.includes('university') || text.includes('college')) {
+    return { icon: '🏫', name: 'Education' };
+  }
+
+  return { icon: '📍', name: 'Location' };
+}
+
 function parseNominatimTitleAndSubtitle(displayName: string): {
   title: string;
   subtitle: string;
@@ -50,16 +84,13 @@ function parseNominatimTitleAndSubtitle(displayName: string): {
   return { title, subtitle };
 }
 
-/**
- * Default Nominatim OSM Provider implementation
- */
 class NominatimPlacesProvider implements PlacesProvider {
   async searchPlaces(
     query: string,
     options?: SearchOptions,
   ): Promise<SearchPlaceItem[]> {
     const trimmedQuery = query.trim();
-    if (trimmedQuery.length < 3) {
+    if (trimmedQuery.length < 2) {
       return [];
     }
 
@@ -118,20 +149,40 @@ class NominatimPlacesProvider implements PlacesProvider {
         return [];
       }
 
-      return data.map((item: any) => {
+      const results: SearchPlaceItem[] = data.map((item: any) => {
         const { title, subtitle } = parseNominatimTitleAndSubtitle(
           item.display_name,
         );
+        const lat = parseFloat(item.lat);
+        const lon = parseFloat(item.lon);
+        const category = detectCategory(item.display_name, item.type || item.category);
+
+        let distanceMeters: number | undefined;
+        let formattedDist: string | undefined;
+
+        if (userLoc?.latitude && userLoc?.longitude) {
+          distanceMeters = Math.round(
+            getHaversineDistance(userLoc.latitude, userLoc.longitude, lat, lon),
+          );
+          formattedDist = formatDistance(distanceMeters);
+        }
+
         return {
           id: item.place_id,
           title,
           subtitle,
-          latitude: parseFloat(item.lat),
-          longitude: parseFloat(item.lon),
+          latitude: lat,
+          longitude: lon,
           displayName: item.display_name,
+          distanceMeters,
+          formattedDistance: formattedDist,
+          categoryIcon: category.icon,
+          categoryName: category.name,
           raw: item,
         };
       });
+
+      return results;
     } catch (error: any) {
       if (error.name === 'AbortError') {
         return [];
@@ -171,16 +222,12 @@ class NominatimPlacesProvider implements PlacesProvider {
   }
 }
 
-// Active provider instance (can be swapped with GooglePlacesProvider)
 let activePlacesProvider: PlacesProvider = new NominatimPlacesProvider();
 
 export function setPlacesProvider(provider: PlacesProvider) {
   activePlacesProvider = provider;
 }
 
-/**
- * Searches places matching query string using active provider.
- */
 export async function searchPlaces(
   query: string,
   options?: SearchOptions,
@@ -188,9 +235,6 @@ export async function searchPlaces(
   return activePlacesProvider.searchPlaces(query, options);
 }
 
-/**
- * Reverse geocodes coordinates to a human readable address using active provider.
- */
 export async function reverseGeocode(
   latitude: number,
   longitude: number,

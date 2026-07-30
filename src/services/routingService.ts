@@ -1,8 +1,3 @@
-/**
- * OSRM Routing Service.
- * Fetches driving route coordinates, distance, duration, and turn-by-turn navigation steps.
- */
-
 import { formatDistance, formatDuration } from '../utils/locationUtils';
 
 export interface OSRMManeuver {
@@ -41,9 +36,6 @@ export interface RouteDetails {
   steps: NavigationStep[];
 }
 
-/**
- * Returns directional maneuver icon symbol based on OSRM type and modifier.
- */
 function getManeuverIcon(type: string, modifier?: string): string {
   if (type === 'arrive') return '🏁';
   if (type === 'depart') return '🚗';
@@ -58,9 +50,6 @@ function getManeuverIcon(type: string, modifier?: string): string {
   return '↑';
 }
 
-/**
- * Parses raw OSRM steps array (from data.routes[0].legs[0].steps) into NavigationStep object array.
- */
 export function parseOSRMSteps(rawSteps: OSRMStep[]): NavigationStep[] {
   if (!Array.isArray(rawSteps)) return [];
 
@@ -112,9 +101,6 @@ export function parseOSRMSteps(rawSteps: OSRMStep[]): NavigationStep[] {
   });
 }
 
-/**
- * Fetches driving route from start to end location via OSRM API with steps=true.
- */
 export async function getRoute(
   startLat: number,
   startLng: number,
@@ -133,7 +119,6 @@ export async function getRoute(
 
     const data = await response.json();
 
-    // Validate routes array and geometry safely
     if (
       !data ||
       !Array.isArray(data.routes) ||

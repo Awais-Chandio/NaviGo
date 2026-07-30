@@ -19,12 +19,10 @@ import { SavedPlace } from '../services/storageService';
 import { calculateBoundingBox } from '../utils/locationUtils';
 
 const LIGHT_MAP_STYLE = 'https://tiles.openfreemap.org/styles/bright';
-const DARK_MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark';
 
 export default function MapScreen() {
   const cameraRef = useRef<CameraRef>(null);
 
-  // Map Tile & Custom Hooks
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFollowingUser, setIsFollowingUser] = useState<boolean>(true);
   const [currentZoom, setCurrentZoom] = useState<number>(15);
@@ -39,6 +37,7 @@ export default function MapScreen() {
     isLoadingRoute,
     currentStep,
     distanceToStep,
+    remainingDuration,
     formattedRemainingDistance,
     formattedRemainingDuration,
     currentBearing,
@@ -49,7 +48,6 @@ export default function MapScreen() {
     handleLocationUpdate,
   } = useNavigation();
 
-  // Forward live location updates to navigation engine and follow user
   useEffect(() => {
     if (location.latitude && location.longitude) {
       handleLocationUpdate(
@@ -58,7 +56,6 @@ export default function MapScreen() {
         location.heading,
       );
 
-      // Camera follow behavior during navigation or live tracking
       if (isFollowingUser && cameraRef.current) {
         if (navigationState === 'navigating') {
           cameraRef.current.flyTo({
@@ -76,9 +73,14 @@ export default function MapScreen() {
         }
       }
     }
-  }, [currentBearing, handleLocationUpdate, isFollowingUser, location, navigationState]);
+  }, [
+    currentBearing,
+    handleLocationUpdate,
+    isFollowingUser,
+    location,
+    navigationState,
+  ]);
 
-  // Fit camera bounds when route becomes ready
   useEffect(() => {
     if (
       navigationState === 'route_ready' &&
@@ -94,18 +96,12 @@ export default function MapScreen() {
     }
   }, [navigationState, routeDetails]);
 
-  /**
-   * Stop camera auto-follow when user touches / moves the map manually
-   */
   const handleMapTouch = useCallback(() => {
     if (isFollowingUser) {
       setIsFollowingUser(false);
     }
   }, [isFollowingUser]);
 
-  /**
-   * Select place suggestion handler
-   */
   const handleSelectPlace = useCallback(
     (item: SearchPlaceItem) => {
       addRecentSearch(item);
@@ -119,9 +115,6 @@ export default function MapScreen() {
     [addRecentSearch, location.latitude, location.longitude, selectDestination],
   );
 
-  /**
-   * Select saved place shortcut handler (Home / Work)
-   */
   const handleSelectSavedPlace = useCallback(
     (saved: SavedPlace) => {
       selectDestination(location.latitude, location.longitude, {
@@ -134,9 +127,6 @@ export default function MapScreen() {
     [location.latitude, location.longitude, selectDestination],
   );
 
-  /**
-   * Reset Compass Bearing & Pitch
-   */
   const handleResetCompass = useCallback(() => {
     if (cameraRef.current) {
       cameraRef.current.easeTo({
@@ -149,9 +139,6 @@ export default function MapScreen() {
     }
   }, [currentZoom, location.latitude, location.longitude]);
 
-  /**
-   * Recenter Camera to User Position & resume tracking
-   */
   const handleRecenter = useCallback(() => {
     setIsFollowingUser(true);
     refreshLocation();
@@ -164,11 +151,14 @@ export default function MapScreen() {
         duration: 1000,
       });
     }
-  }, [currentBearing, location.latitude, location.longitude, navigationState, refreshLocation]);
+  }, [
+    currentBearing,
+    location.latitude,
+    location.longitude,
+    navigationState,
+    refreshLocation,
+  ]);
 
-  /**
-   * Zoom In handler
-   */
   const handleZoomIn = useCallback(() => {
     const nextZoom = Math.min(currentZoom + 1, 20);
     setCurrentZoom(nextZoom);
@@ -181,9 +171,6 @@ export default function MapScreen() {
     }
   }, [currentZoom, location.latitude, location.longitude]);
 
-  /**
-   * Zoom Out handler
-   */
   const handleZoomOut = useCallback(() => {
     const nextZoom = Math.max(currentZoom - 1, 2);
     setCurrentZoom(nextZoom);
@@ -198,18 +185,13 @@ export default function MapScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar
-        barStyle={'dark-content'}
-        backgroundColor={'#ffffff'}
-      />
+      <StatusBar barStyle={'dark-content'} backgroundColor={'#ffffff'} />
 
-      {/* Floating Network / GPS Error Toast */}
       <ErrorToast
         message={errorMessage}
         onDismiss={() => setErrorMessage(null)}
       />
 
-      {/* Top Floating Turn-by-Turn Instruction Card Banner (During Navigation) */}
       {navigationState === 'navigating' && (
         <TurnInstructionCard
           currentStep={currentStep}
@@ -217,7 +199,6 @@ export default function MapScreen() {
         />
       )}
 
-      {/* Floating Autocomplete Search Bar & Shortcuts (Browsing Mode) */}
       <SearchHeader
         userLocation={{
           latitude: location.latitude,
@@ -230,32 +211,25 @@ export default function MapScreen() {
         onSelectSavedPlace={handleSelectSavedPlace}
       />
 
-      {/* Main Map Component */}
       <Map
         style={styles.map}
         mapStyle={LIGHT_MAP_STYLE}
         onTouchStart={handleMapTouch}
       >
-        {/* Location Accuracy Circle */}
         <AccuracyCircle
           longitude={location.longitude}
           latitude={location.latitude}
           accuracy={location.accuracy}
         />
 
-        {/* Polyline Route Layer */}
-        {routeDetails && (
-          <RouteLine coordinates={routeDetails.coordinates} />
-        )}
+        {routeDetails && <RouteLine coordinates={routeDetails.coordinates} />}
 
-        {/* Camera */}
         <Camera
           ref={cameraRef}
           zoom={currentZoom}
           center={[location.longitude, location.latitude]}
         />
 
-        {/* User GPS Marker */}
         <UserMarker
           longitude={location.longitude}
           latitude={location.latitude}
@@ -263,7 +237,6 @@ export default function MapScreen() {
           isNavigating={navigationState === 'navigating'}
         />
 
-        {/* Destination Marker */}
         {destination && (
           <DestinationMarker
             longitude={destination.longitude}
@@ -272,7 +245,6 @@ export default function MapScreen() {
         )}
       </Map>
 
-      {/* Floating Map Control Stack */}
       <MapControls
         bearing={currentBearing}
         hasDestination={destination !== null}
@@ -283,13 +255,13 @@ export default function MapScreen() {
         onZoomOut={handleZoomOut}
       />
 
-      {/* Bottom Route Summary & Turn-by-Turn Navigation Panel */}
       <NavigationCard
         navigationState={navigationState}
         destination={destination}
         isLoadingRoute={isLoadingRoute}
         formattedDistance={formattedRemainingDistance}
         formattedDuration={formattedRemainingDuration}
+        remainingDurationSeconds={remainingDuration}
         nextInstruction={nextInstruction}
         onStartNavigation={startNavigation}
         onCancelNavigation={cancelNavigation}

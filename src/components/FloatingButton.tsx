@@ -5,7 +5,6 @@ import {
   ViewStyle,
   StyleProp,
   Text,
-  View,
 } from 'react-native';
 
 interface FloatingButtonProps {

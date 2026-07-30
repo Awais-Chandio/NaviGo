@@ -1,8 +1,3 @@
-/**
- * Geocoding & Search Provider Abstraction Layer.
- * Enables seamless swapping between Nominatim, Mapbox, Google Places APIs.
- */
-
 import {
   searchPlaces,
   reverseGeocode,

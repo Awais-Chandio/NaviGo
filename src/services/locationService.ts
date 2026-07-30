@@ -1,7 +1,3 @@
-/**
- * Geolocation Service with GPS accuracy filtering to prevent route jumping.
- */
-
 import Geolocation, { GeoPosition } from 'react-native-geolocation-service';
 import { RequestLocationPermission } from '../permissions/locationPermission';
 
@@ -13,21 +9,14 @@ export interface LocationData {
   speed?: number | null;
 }
 
-// Ignore location fixes with accuracy worse than 35 meters
 const MAX_ACCURACY_THRESHOLD = 35;
 
-/**
- * Validates whether GPS fix accuracy is acceptable.
- */
 export function isLocationAccurate(position: GeoPosition): boolean {
   if (!position?.coords) return false;
   const accuracy = position.coords.accuracy;
   return typeof accuracy === 'number' && accuracy <= MAX_ACCURACY_THRESHOLD;
 }
 
-/**
- * Gets one-time current location fix.
- */
 export async function getCurrentLocationFix(): Promise<LocationData | null> {
   const granted = await RequestLocationPermission();
   if (!granted) return null;
@@ -59,16 +48,12 @@ export async function getCurrentLocationFix(): Promise<LocationData | null> {
   });
 }
 
-/**
- * Starts continuous location tracking with GPS accuracy filtering.
- */
 export function watchLocationUpdates(
   onLocation: (loc: LocationData) => void,
   onError?: (err: any) => void,
 ): number {
   return Geolocation.watchPosition(
     position => {
-      // Accuracy filter check
       if (!isLocationAccurate(position)) {
         console.warn(
           `[GPS Filter] Ignored inaccurate fix: accuracy=${position.coords.accuracy}m`,

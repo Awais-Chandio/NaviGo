@@ -4,12 +4,9 @@ import { GeoJSONSource, Layer } from '@maplibre/maplibre-react-native';
 interface AccuracyCircleProps {
   longitude: number;
   latitude: number;
-  accuracy: number; // radius in meters
+  accuracy: number;
 }
 
-/**
- * Creates a GeoJSON Polygon circle around lat/lng with given radius in meters.
- */
 function createGeoJSONCircle(
   lng: number,
   lat: number,

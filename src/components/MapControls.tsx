@@ -30,7 +30,6 @@ export const MapControls: React.FC<MapControlsProps> = ({
 
   return (
     <View style={[styles.container, { bottom: dynamicBottom }]}>
-      {/* 1. Zoom In Button */}
       <Pressable
         accessibilityLabel="Zoom In"
         style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
@@ -39,7 +38,6 @@ export const MapControls: React.FC<MapControlsProps> = ({
         <Text style={styles.zoomText}>＋</Text>
       </Pressable>
 
-      {/* 2. Zoom Out Button */}
       <Pressable
         accessibilityLabel="Zoom Out"
         style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
@@ -48,7 +46,6 @@ export const MapControls: React.FC<MapControlsProps> = ({
         <Text style={styles.zoomText}>－</Text>
       </Pressable>
 
-      {/* 3. Compass Button (Resets map rotation to North) */}
       <Pressable
         accessibilityLabel="Reset Compass Bearing"
         style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
@@ -59,7 +56,6 @@ export const MapControls: React.FC<MapControlsProps> = ({
         </View>
       </Pressable>
 
-      {/* 4. Recenter Button (Recenter camera on live GPS location) */}
       <Pressable
         accessibilityLabel="Re-center location"
         style={({ pressed }) => [

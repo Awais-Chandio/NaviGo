@@ -1,17 +1,10 @@
-/**
- * Utility functions for geolocation calculations, bearing, distance, polyline projection, and formatting.
- */
-
-/**
- * Calculates the Haversine distance between two coordinates in meters.
- */
 export function getHaversineDistance(
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number,
 ): number {
-  const R = 6371e3; // Earth radius in meters
+  const R = 6371e3;
   const rad = Math.PI / 180;
   const dLat = (lat2 - lat1) * rad;
   const dLon = (lon2 - lon1) * rad;
@@ -25,9 +18,6 @@ export function getHaversineDistance(
   return R * c;
 }
 
-/**
- * Calculates bearing (heading angle in degrees 0-360) from point 1 to point 2.
- */
 export function calculateBearing(
   lat1: number,
   lon1: number,
@@ -44,9 +34,6 @@ export function calculateBearing(
   return (brng + 360) % 360;
 }
 
-/**
- * Calculates perpendicular distance in meters from point P (lat, lon) to line segment AB.
- */
 export function getDistanceFromPointToLineSegment(
   pLat: number,
   pLng: number,
@@ -60,7 +47,6 @@ export function getDistanceFromPointToLineSegment(
     return getHaversineDistance(pLat, pLng, aLat, aLng);
   }
 
-  // Projection factor t
   const t =
     ((pLat - aLat) * (bLat - aLat) + (pLng - aLng) * (bLng - aLng)) /
     (Math.pow(bLat - aLat, 2) + Math.pow(bLng - aLng, 2));
@@ -72,9 +58,6 @@ export function getDistanceFromPointToLineSegment(
   return getHaversineDistance(pLat, pLng, projLat, projLng);
 }
 
-/**
- * Calculates minimum distance in meters from user location to a route polyline.
- */
 export function getDistanceToRoute(
   userLat: number,
   userLng: number,
@@ -105,9 +88,6 @@ export function getDistanceToRoute(
   return minDistance === Infinity ? 0 : minDistance;
 }
 
-/**
- * Estimates remaining distance (meters) along route from closest segment to end.
- */
 export function calculateRemainingDistanceOnRoute(
   userLat: number,
   userLng: number,
@@ -137,7 +117,6 @@ export function calculateRemainingDistanceOnRoute(
     }
   }
 
-  // Distance from user to remaining points along route
   let remainingMeters = getHaversineDistance(
     userLat,
     userLng,
@@ -154,9 +133,6 @@ export function calculateRemainingDistanceOnRoute(
   return Math.round(remainingMeters);
 }
 
-/**
- * Calculates bounding box in MapLibre LngLatBounds format: [west, south, east, north]
- */
 export function calculateBoundingBox(
   coordinates: [number, number][],
 ): [number, number, number, number] {
@@ -180,9 +156,6 @@ export function calculateBoundingBox(
   return [minLng, minLat, maxLng, maxLat];
 }
 
-/**
- * Formats distance in meters to readable format (e.g. 850 m or 4.5 km)
- */
 export function formatDistance(meters: number): string {
   if (meters < 1000) {
     return `${Math.round(meters)} m`;
@@ -191,9 +164,6 @@ export function formatDistance(meters: number): string {
   return `${km} km`;
 }
 
-/**
- * Formats duration in seconds to readable format (e.g. 12 min or 1 h 25 min)
- */
 export function formatDuration(seconds: number): string {
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) {

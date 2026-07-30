@@ -23,9 +23,6 @@ export function useLocation() {
     longitude: number;
   } | null>(null);
 
-  /**
-   * Only fetches reverse geocode address if moved > 50 meters.
-   */
   const updateAddressIfNeeded = useCallback(
     async (latitude: number, longitude: number) => {
       if (lastGeocodedCoordsRef.current) {

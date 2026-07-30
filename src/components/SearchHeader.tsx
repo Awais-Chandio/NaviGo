@@ -14,6 +14,8 @@ import { type SearchPlaceItem } from '../services/searchService';
 import { SavedPlace } from '../services/storageService';
 import { NavigationState } from '../hooks/useNavigation';
 
+import { ScrollView } from 'react-native';
+
 interface SearchHeaderProps {
   userLocation: { latitude: number; longitude: number };
   navigationState: NavigationState;
@@ -22,6 +24,18 @@ interface SearchHeaderProps {
   onSelectPlace: (item: SearchPlaceItem) => void;
   onSelectSavedPlace?: (place: SavedPlace) => void;
 }
+
+const CATEGORY_CHIPS = [
+  { id: 'gas', title: 'Gas', icon: '⛽', query: 'fuel station' },
+  { id: 'food', title: 'Food', icon: '🍔', query: 'restaurant' },
+  { id: 'hospital', title: 'Hospital', icon: '🏥', query: 'hospital' },
+  { id: 'atm', title: 'ATM', icon: '🏧', query: 'atm bank' },
+  { id: 'hotel', title: 'Hotel', icon: '🏨', query: 'hotel' },
+  { id: 'shop', title: 'Shopping', icon: '🛒', query: 'shopping mall' },
+  { id: 'mosque', title: 'Mosque', icon: '🕌', query: 'mosque' },
+];
+
+const ItemSeparator: React.FC = () => <View style={styles.divider} />;
 
 export const SearchHeader: React.FC<SearchHeaderProps> = ({
   userLocation,
@@ -37,6 +51,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [isFocused, setIsFocused] = useState<boolean>(false);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
@@ -58,7 +73,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
     const results = await geocodingService.searchPlaces(text, {
       userLocation,
       countryCode: 'pk',
-      limit: 8,
+      limit: 10,
       signal: controller.signal,
     });
 
@@ -68,12 +83,13 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const handleTextChange = (text: string) => {
     setSearchText(text);
+    setSelectedCategory(null);
 
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    if (text.trim().length < 3) {
+    if (text.trim().length < 2) {
       setSearchResults([]);
       setIsSearching(false);
       setHasSearched(false);
@@ -85,7 +101,13 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
     searchTimeoutRef.current = setTimeout(() => {
       executeSearch(text);
-    }, 600);
+    }, 500);
+  };
+
+  const handleCategoryPress = (cat: typeof CATEGORY_CHIPS[0]) => {
+    setSearchText(cat.title);
+    setSelectedCategory(cat.id);
+    executeSearch(cat.query);
   };
 
   const handleSelectItem = (item: SearchPlaceItem) => {
@@ -96,6 +118,8 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   };
 
   const handleSelectSaved = (saved: SavedPlace) => {
+    setIsFocused(false);
+    setSearchResults([]);
     if (onSelectSavedPlace) {
       onSelectSavedPlace(saved);
     } else {
@@ -114,6 +138,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
     setSearchText('');
     setSearchResults([]);
     setHasSearched(false);
+    setSelectedCategory(null);
   };
 
   return (
@@ -122,7 +147,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         <Text style={styles.searchIcon}>🔍</Text>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search destination in Pakistan..."
+          placeholder="Search destination, food, fuel, atm in Pakistan..."
           placeholderTextColor="#757575"
           value={searchText}
           onChangeText={handleTextChange}
@@ -144,12 +169,16 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         )}
       </View>
 
-      {/* Quick Saved Shortcuts Row (Home / Work) */}
-      {savedPlaces.length > 0 && searchText.length === 0 && (
-        <View style={styles.savedRow}>
+      {/* Quick Category & Saved Places Chips Row */}
+      {searchText.length === 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.savedRow}
+        >
           {savedPlaces.map(place => (
             <Pressable
-              key={place.id}
+              key={`saved-${place.id}`}
               onPress={() => handleSelectSaved(place)}
               style={styles.savedChip}
             >
@@ -163,10 +192,30 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
               <Text style={styles.chipText}>{place.title}</Text>
             </Pressable>
           ))}
-        </View>
+
+          {CATEGORY_CHIPS.map(cat => (
+            <Pressable
+              key={`cat-${cat.id}`}
+              onPress={() => handleCategoryPress(cat)}
+              style={[
+                styles.categoryChip,
+                selectedCategory === cat.id && styles.categoryChipActive,
+              ]}
+            >
+              <Text style={styles.chipIcon}>{cat.icon}</Text>
+              <Text
+                style={[
+                  styles.categoryChipText,
+                  selectedCategory === cat.id && styles.categoryChipTextActive,
+                ]}
+              >
+                {cat.title}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
       )}
 
-      {/* Live Search Results Dropdown */}
       {searchResults.length > 0 ? (
         <View style={styles.suggestionsContainer}>
           <FlatList
@@ -174,7 +223,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
             keyExtractor={item => item.id.toString()}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
-            ItemSeparatorComponent={() => <View style={styles.divider} />}
+            ItemSeparatorComponent={ItemSeparator}
             renderItem={({ item }) => (
               <Pressable
                 onPress={() => handleSelectItem(item)}
@@ -184,42 +233,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
                 ]}
               >
                 <View style={styles.iconContainer}>
-                  <Text style={styles.pinIcon}>📍</Text>
-                </View>
-                <View style={styles.textContainer}>
-                  <Text style={styles.resultTitle} numberOfLines={1}>
-                    {item.title}
-                  </Text>
-                  {item.subtitle ? (
-                    <Text style={styles.resultSubtitle} numberOfLines={2}>
-                      {item.subtitle}
-                    </Text>
-                  ) : null}
-                </View>
-              </Pressable>
-            )}
-          />
-        </View>
-      ) : isFocused && searchText.length === 0 && recentSearches.length > 0 ? (
-        /* Recent Searches Dropdown */
-        <View style={styles.suggestionsContainer}>
-          <Text style={styles.sectionHeader}>Recent Searches</Text>
-          <FlatList
-            data={recentSearches}
-            keyExtractor={item => `recent-${item.id}`}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            ItemSeparatorComponent={() => <View style={styles.divider} />}
-            renderItem={({ item }) => (
-              <Pressable
-                onPress={() => handleSelectItem(item)}
-                style={({ pressed }) => [
-                  styles.searchResultItem,
-                  pressed && styles.itemPressed,
-                ]}
-              >
-                <View style={styles.iconContainer}>
-                  <Text style={styles.pinIcon}>🕒</Text>
+                  <Text style={styles.pinIcon}>{item.categoryIcon || '📍'}</Text>
                 </View>
                 <View style={styles.textContainer}>
                   <Text style={styles.resultTitle} numberOfLines={1}>
@@ -231,11 +245,60 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
                     </Text>
                   ) : null}
                 </View>
+
+                {item.formattedDistance && (
+                  <View style={styles.distanceBadge}>
+                    <Text style={styles.distanceBadgeText}>
+                      {item.formattedDistance}
+                    </Text>
+                  </View>
+                )}
               </Pressable>
             )}
           />
         </View>
-      ) : hasSearched && !isSearching && searchText.length >= 3 ? (
+      ) : isFocused && searchText.length === 0 && recentSearches.length > 0 ? (
+        <View style={styles.suggestionsContainer}>
+          <Text style={styles.sectionHeader}>Recent Searches</Text>
+          <FlatList
+            data={recentSearches}
+            keyExtractor={item => `recent-${item.id}`}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            ItemSeparatorComponent={ItemSeparator}
+            renderItem={({ item }) => (
+              <Pressable
+                onPress={() => handleSelectItem(item)}
+                style={({ pressed }) => [
+                  styles.searchResultItem,
+                  pressed && styles.itemPressed,
+                ]}
+              >
+                <View style={styles.iconContainer}>
+                  <Text style={styles.pinIcon}>{item.categoryIcon || '🕒'}</Text>
+                </View>
+                <View style={styles.textContainer}>
+                  <Text style={styles.resultTitle} numberOfLines={1}>
+                    {item.title}
+                  </Text>
+                  {item.subtitle ? (
+                    <Text style={styles.resultSubtitle} numberOfLines={1}>
+                      {item.subtitle}
+                    </Text>
+                  ) : null}
+                </View>
+                {item.formattedDistance && (
+                  <View style={styles.distanceBadge}>
+                    <Text style={styles.distanceBadgeText}>
+                      {item.formattedDistance}
+                    </Text>
+                  </View>
+                )}
+              </Pressable>
+            )}
+          />
+        </View>
+      ) : hasSearched && !isSearching && searchText.length >= 2 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyText}>No locations found</Text>
         </View>
@@ -312,8 +375,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1a73e8',
   },
+  categoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f1f3f4',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  categoryChipActive: {
+    backgroundColor: '#1a73e8',
+  },
+  categoryChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#3c4043',
+  },
+  categoryChipTextActive: {
+    color: '#ffffff',
+  },
   suggestionsContainer: {
-    maxHeight: 280,
+    maxHeight: 320,
     borderTopWidth: 1,
     borderTopColor: '#f1f3f4',
   },
@@ -337,19 +419,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
   },
   iconContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#f1f3f4',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
   },
   pinIcon: {
-    fontSize: 14,
+    fontSize: 16,
   },
   textContainer: {
     flex: 1,
+    marginRight: 8,
   },
   resultTitle: {
     fontSize: 15,
@@ -360,6 +443,17 @@ const styles = StyleSheet.create({
   resultSubtitle: {
     fontSize: 13,
     color: '#70757a',
+  },
+  distanceBadge: {
+    backgroundColor: '#e8f0fe',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  distanceBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1a73e8',
   },
   divider: {
     height: 1,
