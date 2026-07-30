@@ -10,7 +10,7 @@ interface UserMarkerProps {
   isNavigating?: boolean;
 }
 
-export const UserMarker: React.FC<UserMarkerProps> = ({
+export const UserMarker: React.FC<UserMarkerProps> = React.memo(({
   longitude,
   latitude,
   bearing = 0,
@@ -34,7 +34,7 @@ export const UserMarker: React.FC<UserMarkerProps> = ({
       </View>
     </ViewAnnotation>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: {

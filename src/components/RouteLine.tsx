@@ -5,7 +5,7 @@ interface RouteLineProps {
   coordinates: [number, number][];
 }
 
-export const RouteLine: React.FC<RouteLineProps> = ({ coordinates }) => {
+export const RouteLine: React.FC<RouteLineProps> = React.memo(({ coordinates }) => {
   if (!coordinates || coordinates.length === 0) return null;
 
   return (
@@ -31,4 +31,4 @@ export const RouteLine: React.FC<RouteLineProps> = ({ coordinates }) => {
       />
     </GeoJSONSource>
   );
-};
+});

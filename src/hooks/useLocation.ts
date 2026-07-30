@@ -5,10 +5,12 @@ import {
   watchLocationUpdates,
   stopLocationWatch,
 } from '../services/locationService';
-import { reverseGeocode } from '../services/searchService';
+import { reverseGeocodeDetails } from '../services/searchService';
+import { RequestLocationPermission } from '../permissions/locationPermission';
 import { getHaversineDistance } from '../utils/locationUtils';
+import { LOCATION_CONFIG } from '../config/locationConfig';
 
-export function useLocation() {
+export function useLocation(isNavigating = false) {
   const [location, setLocation] = useState<LocationData>({
     latitude: 25.396,
     longitude: 68.3578,
@@ -17,7 +19,12 @@ export function useLocation() {
   });
 
   const [address, setAddress] = useState<string>('');
+  const [detectedArea, setDetectedArea] = useState<string>('');
+  const [locationError, setLocationError] = useState<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+  const reverseAbortRef = useRef<AbortController | null>(null);
+  const reverseSequenceRef = useRef<number>(0);
   const lastGeocodedCoordsRef = useRef<{
     latitude: number;
     longitude: number;
@@ -32,46 +39,145 @@ export function useLocation() {
           latitude,
           longitude,
         );
-        if (dist < 50) return;
+        if (dist < LOCATION_CONFIG.ADDRESS_GEOCODE_THRESHOLD_METERS) return;
       }
 
-      lastGeocodedCoordsRef.current = { latitude, longitude };
-      const currentAddress = await reverseGeocode(latitude, longitude);
-      setAddress(currentAddress);
+      reverseAbortRef.current?.abort();
+      const controller = new AbortController();
+      reverseAbortRef.current = controller;
+      const sequence = ++reverseSequenceRef.current;
+      try {
+        const res = await reverseGeocodeDetails(
+          latitude,
+          longitude,
+          controller.signal,
+        );
+        if (
+          controller.signal.aborted ||
+          !isMountedRef.current ||
+          sequence !== reverseSequenceRef.current
+        ) {
+          return;
+        }
+        lastGeocodedCoordsRef.current = { latitude, longitude };
+        setAddress(res.displayName);
+        if (res.detectedArea) {
+          setDetectedArea(res.detectedArea);
+        }
+      } catch (err) {
+        if (
+          err &&
+          typeof err === 'object' &&
+          'name' in err &&
+          (err as { name: string }).name === 'AbortError'
+        ) {
+          return;
+        }
+        console.warn('Reverse geocode error in useLocation:', err);
+      } finally {
+        if (reverseAbortRef.current === controller) {
+          reverseAbortRef.current = null;
+        }
+      }
     },
     [],
   );
 
   const startTracking = useCallback(() => {
-    if (watchIdRef.current !== null) return;
+    if (watchIdRef.current !== null) {
+      stopLocationWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
 
-    watchIdRef.current = watchLocationUpdates(newLoc => {
-      setLocation(newLoc);
-      updateAddressIfNeeded(newLoc.latitude, newLoc.longitude);
-    });
-  }, [updateAddressIfNeeded]);
+    const interval = isNavigating
+      ? LOCATION_CONFIG.NAVIGATION_LOCATION_INTERVAL
+      : LOCATION_CONFIG.NORMAL_LOCATION_INTERVAL;
+
+    watchIdRef.current = watchLocationUpdates(
+      newLoc => {
+        setLocation(prev => {
+          if (
+            prev &&
+            Math.abs(prev.latitude - newLoc.latitude) < 0.000005 &&
+            Math.abs(prev.longitude - newLoc.longitude) < 0.000005 &&
+            prev.heading === newLoc.heading &&
+            prev.accuracy === newLoc.accuracy &&
+            prev.speed === newLoc.speed &&
+            prev.timestamp === newLoc.timestamp
+          ) {
+            return prev;
+          }
+          return newLoc;
+        });
+        setLocationError(null);
+        updateAddressIfNeeded(newLoc.latitude, newLoc.longitude);
+      },
+      err => {
+        console.warn('GPS Watch Error:', err);
+        const errMsg =
+          err && typeof err === 'object' && 'message' in err
+            ? String((err as { message: unknown }).message)
+            : 'GPS location update failed';
+        setLocationError(errMsg);
+      },
+      {
+        interval,
+        fastestInterval: Math.round(interval / 2),
+        distanceFilter: isNavigating ? 2 : LOCATION_CONFIG.GPS_DISTANCE_FILTER_METERS,
+      },
+    );
+  }, [isNavigating, updateAddressIfNeeded]);
 
   const refreshLocation = useCallback(async () => {
     const loc = await getCurrentLocationFix();
+    if (!isMountedRef.current) return;
     if (loc) {
       setLocation(loc);
+      setLocationError(null);
       updateAddressIfNeeded(loc.latitude, loc.longitude);
+    } else {
+      setLocationError('Location permission denied or GPS fix failed');
     }
   }, [updateAddressIfNeeded]);
 
   useEffect(() => {
-    refreshLocation();
-    startTracking();
+    let isMounted = true;
+    isMountedRef.current = true;
+
+    async function initLocation() {
+      const granted = await RequestLocationPermission();
+      if (!isMounted) return;
+
+      if (!granted) {
+        setLocationError('Location permission denied');
+        return;
+      }
+
+      setLocationError(null);
+      refreshLocation();
+      startTracking();
+    }
+
+    initLocation();
 
     return () => {
-      stopLocationWatch(watchIdRef.current);
-      watchIdRef.current = null;
+      isMounted = false;
+      isMountedRef.current = false;
+      reverseSequenceRef.current += 1;
+      reverseAbortRef.current?.abort();
+      reverseAbortRef.current = null;
+      if (watchIdRef.current !== null) {
+        stopLocationWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
     };
-  }, [refreshLocation, startTracking]);
+  }, [isNavigating, refreshLocation, startTracking]);
 
   return {
     location,
     address,
+    detectedArea,
+    locationError,
     refreshLocation,
   };
 }

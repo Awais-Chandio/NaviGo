@@ -1,6 +1,5 @@
 import {
-  searchPlaces,
-  reverseGeocode,
+  searchService,
   type SearchPlaceItem,
   type SearchOptions,
 } from './searchService';
@@ -15,14 +14,14 @@ export interface SearchProvider {
   ): Promise<string>;
 }
 
-class NominatimProvider implements SearchProvider {
-  public name = 'OpenStreetMap Nominatim';
+class UnifiedGeocodingProvider implements SearchProvider {
+  public name = 'Unified Geocoding Provider';
 
   public async search(
     query: string,
     options?: SearchOptions,
   ): Promise<SearchPlaceItem[]> {
-    return searchPlaces(query, options);
+    return searchService.searchPlaces(query, options);
   }
 
   public async reverseGeocode(
@@ -30,12 +29,12 @@ class NominatimProvider implements SearchProvider {
     longitude: number,
     signal?: AbortSignal,
   ): Promise<string> {
-    return reverseGeocode(latitude, longitude, signal);
+    return searchService.reverseGeocode(latitude, longitude, signal);
   }
 }
 
 class GeocodingService {
-  private activeProvider: SearchProvider = new NominatimProvider();
+  private activeProvider: SearchProvider = new UnifiedGeocodingProvider();
 
   public setProvider(provider: SearchProvider) {
     this.activeProvider = provider;

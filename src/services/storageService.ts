@@ -1,80 +1,20 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SearchPlaceItem } from './searchService';
+import { SavedPlace } from '../types/places';
+import { savedPlacesService } from './SavedPlacesService';
 
-export interface SavedPlace {
-  id: string;
-  type: 'home' | 'work' | 'favorite';
-  title: string;
-  subtitle: string;
-  latitude: number;
-  longitude: number;
-}
+export type { SavedPlace };
 
-const RECENT_SEARCHES_KEY = '@my_places_tracker_recent_searches_v1';
-const SAVED_PLACES_KEY = '@my_places_tracker_saved_places_v1';
+const RECENT_SEARCHES_KEY = '@navigo_recent_searches_v2';
 
 class StorageService {
   private recentSearches: SearchPlaceItem[] = [];
-  private savedPlaces: Map<string, SavedPlace> = new Map();
-  private asyncStorage: any = null;
+  private asyncStorage = AsyncStorage;
+  private initializationPromise: Promise<void>;
+  private persistPromise: Promise<void> = Promise.resolve();
 
   constructor() {
-    try {
-      this.asyncStorage = require('@react-native-async-storage/async-storage').default;
-      this.loadFromStorage();
-    } catch {
-      this.asyncStorage = null;
-    }
-
-    if (this.savedPlaces.size === 0) {
-      this.savedPlaces.set('home', {
-        id: 'home',
-        type: 'home',
-        title: 'Home',
-        subtitle: 'Hyderabad, Sindh, Pakistan',
-        latitude: 25.396,
-        longitude: 68.3578,
-      });
-      this.savedPlaces.set('work', {
-        id: 'work',
-        type: 'work',
-        title: 'Work',
-        subtitle: 'Karachi Financial Center, Pakistan',
-        latitude: 24.8607,
-        longitude: 67.0011,
-      });
-      this.savedPlaces.set('centaurus', {
-        id: 'centaurus',
-        type: 'favorite',
-        title: 'Centaurus Mall',
-        subtitle: 'F-8, Islamabad, Pakistan',
-        latitude: 33.7077,
-        longitude: 73.0498,
-      });
-      this.savedPlaces.set('mazar', {
-        id: 'mazar',
-        type: 'favorite',
-        title: 'Mazar-e-Quaid',
-        subtitle: 'M.A. Jinnah Rd, Karachi, Pakistan',
-        latitude: 24.8746,
-        longitude: 67.0399,
-      });
-      this.savedPlaces.set('minar', {
-        id: 'minar',
-        type: 'favorite',
-        title: 'Minar-e-Pakistan',
-        subtitle: 'Greater Iqbal Park, Lahore, Pakistan',
-        latitude: 31.5925,
-        longitude: 74.3095,
-      });
-      this.savedPlaces.set('faisal_mosque', {
-        id: 'faisal_mosque',
-        type: 'favorite',
-        title: 'Faisal Mosque',
-        subtitle: 'Shah Faisal Ave, Islamabad, Pakistan',
-        latitude: 33.7297,
-        longitude: 73.0372,
-      });
-    }
+    this.initializationPromise = this.loadFromStorage();
   }
 
   private async loadFromStorage(): Promise<void> {
@@ -82,13 +22,23 @@ class StorageService {
     try {
       const storedSearches = await this.asyncStorage.getItem(RECENT_SEARCHES_KEY);
       if (storedSearches) {
-        this.recentSearches = JSON.parse(storedSearches);
-      }
-
-      const storedSaved = await this.asyncStorage.getItem(SAVED_PLACES_KEY);
-      if (storedSaved) {
-        const parsed: SavedPlace[] = JSON.parse(storedSaved);
-        parsed.forEach(p => this.savedPlaces.set(p.id, p));
+        const parsed: unknown = JSON.parse(storedSearches);
+        if (Array.isArray(parsed)) {
+          this.recentSearches = parsed.filter(
+            (item): item is SearchPlaceItem =>
+              !!item &&
+              typeof item === 'object' &&
+              'id' in item &&
+              'title' in item &&
+              typeof item.title === 'string' &&
+              'latitude' in item &&
+              typeof item.latitude === 'number' &&
+              Number.isFinite(item.latitude) &&
+              'longitude' in item &&
+              typeof item.longitude === 'number' &&
+              Number.isFinite(item.longitude),
+          );
+        }
       }
     } catch (e) {
       console.warn('StorageService load error:', e);
@@ -107,16 +57,16 @@ class StorageService {
     }
   }
 
-  private async persistSavedPlaces(): Promise<void> {
-    if (!this.asyncStorage) return;
-    try {
-      await this.asyncStorage.setItem(
-        SAVED_PLACES_KEY,
-        JSON.stringify(Array.from(this.savedPlaces.values())),
-      );
-    } catch (e) {
-      console.warn('Persist saved places error:', e);
-    }
+  public async initialize(): Promise<void> {
+    return this.initializationPromise;
+  }
+
+  private queuePersist(): void {
+    this.persistPromise = this.persistPromise
+      .then(() => this.persistSearches())
+      .catch(error => {
+        console.warn('Persist searches queue error:', error);
+      });
   }
 
   public addRecentSearch(item: SearchPlaceItem): SearchPlaceItem[] {
@@ -127,7 +77,7 @@ class StorageService {
     if (this.recentSearches.length > 10) {
       this.recentSearches.pop();
     }
-    this.persistSearches();
+    this.queuePersist();
     return [...this.recentSearches];
   }
 
@@ -135,30 +85,28 @@ class StorageService {
     return [...this.recentSearches];
   }
 
+  public async getRecentSearchesAsync(): Promise<SearchPlaceItem[]> {
+    await this.initialize();
+    return this.getRecentSearches();
+  }
+
   public clearRecentSearches(): SearchPlaceItem[] {
     this.recentSearches = [];
-    this.persistSearches();
+    this.queuePersist();
     return [];
   }
 
-  public savePlace(place: SavedPlace): SavedPlace[] {
-    this.savedPlaces.set(place.id, place);
-    this.persistSavedPlaces();
-    return Array.from(this.savedPlaces.values());
+  // Delegated saved places helpers
+  public async getSavedPlacesAsync(): Promise<SavedPlace[]> {
+    return savedPlacesService.getSavedPlaces();
   }
 
-  public removeSavedPlace(id: string): SavedPlace[] {
-    this.savedPlaces.delete(id);
-    this.persistSavedPlaces();
-    return Array.from(this.savedPlaces.values());
+  public async savePlaceAsync(place: SavedPlace): Promise<SavedPlace[]> {
+    return savedPlacesService.savePlace(place);
   }
 
-  public getSavedPlaces(): SavedPlace[] {
-    return Array.from(this.savedPlaces.values());
-  }
-
-  public getPlaceByType(type: 'home' | 'work'): SavedPlace | undefined {
-    return Array.from(this.savedPlaces.values()).find(p => p.type === type);
+  public async removeSavedPlaceAsync(id: string): Promise<SavedPlace[]> {
+    return savedPlacesService.deletePlace(id);
   }
 }
 

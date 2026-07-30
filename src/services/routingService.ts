@@ -1,4 +1,12 @@
 import { formatDistance, formatDuration } from '../utils/locationUtils';
+import {
+  IRoutingRepository,
+  InvalidRoutingResponseError,
+  NoRouteFoundError,
+  OSRMPlanRoutingRepository,
+  OfflineGraphRoutingRepository,
+} from '../repositories/RoutingRepository';
+import { connectivityService } from './connectivityService';
 
 export interface OSRMManeuver {
   type: string;
@@ -6,6 +14,16 @@ export interface OSRMManeuver {
   location?: [number, number];
   bearing_after?: number;
   bearing_before?: number;
+  exit?: number;
+}
+
+export interface OSRMLane {
+  indications?: string[];
+  valid?: boolean;
+}
+
+export interface OSRMIntersection {
+  lanes?: OSRMLane[];
 }
 
 export interface OSRMStep {
@@ -14,6 +32,12 @@ export interface OSRMStep {
   name?: string;
   maneuver: OSRMManeuver;
   mode?: string;
+  intersections?: OSRMIntersection[];
+}
+
+export interface LaneInstruction {
+  lanes: string[];
+  recommendedLane?: string;
 }
 
 export interface NavigationStep {
@@ -22,18 +46,127 @@ export interface NavigationStep {
   duration: number;
   type: string;
   modifier?: string;
+  maneuver?: string;
   formattedDistance?: string;
   iconSymbol?: string;
   location?: [number, number];
+  lanes?: LaneInstruction;
 }
 
 export interface RouteDetails {
+  id?: string;
+  name?: string;
+  tag?: 'Fastest' | 'Shortest' | 'Alternative';
   coordinates: [number, number][];
   distanceMeters: number;
   durationSeconds: number;
   formattedDistance: string;
   formattedDuration: string;
   steps: NavigationStep[];
+}
+
+export interface RouteResult {
+  distance: number;
+  duration: number;
+  geometry: [number, number][];
+  steps: NavigationStep[];
+}
+
+export interface RoutingProvider {
+  name: string;
+  getRoute(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+    signal?: AbortSignal,
+  ): Promise<RouteDetails | null>;
+  getRouteAlternatives?(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+    signal?: AbortSignal,
+  ): Promise<RouteDetails[]>;
+}
+
+function isValidRouteCoordinate(coordinate: unknown): coordinate is [number, number] {
+  return (
+    Array.isArray(coordinate) &&
+    coordinate.length >= 2 &&
+    typeof coordinate[0] === 'number' &&
+    Number.isFinite(coordinate[0]) &&
+    coordinate[0] >= -180 &&
+    coordinate[0] <= 180 &&
+    typeof coordinate[1] === 'number' &&
+    Number.isFinite(coordinate[1]) &&
+    coordinate[1] >= -90 &&
+    coordinate[1] <= 90
+  );
+}
+
+export function isValidRouteDetails(route: unknown): route is RouteDetails {
+  if (!route || typeof route !== 'object') return false;
+  const candidate = route as Partial<RouteDetails>;
+  return (
+    Array.isArray(candidate.coordinates) &&
+    candidate.coordinates.length >= 2 &&
+    candidate.coordinates.every(isValidRouteCoordinate) &&
+    typeof candidate.distanceMeters === 'number' &&
+    Number.isFinite(candidate.distanceMeters) &&
+    candidate.distanceMeters > 0 &&
+    typeof candidate.durationSeconds === 'number' &&
+    Number.isFinite(candidate.durationSeconds) &&
+    candidate.durationSeconds > 0 &&
+    Array.isArray(candidate.steps)
+  );
+}
+
+export function normalizeAndSortRoutes(routes: unknown): RouteDetails[] {
+  if (!Array.isArray(routes)) return [];
+
+  const normalized = routes
+    .filter(isValidRouteDetails)
+    .map(route => {
+      const distanceMeters = Math.round(route.distanceMeters);
+      const durationSeconds = Math.round(route.durationSeconds);
+      return {
+        ...route,
+        coordinates: route.coordinates.map(
+          coordinate => [coordinate[0], coordinate[1]] as [number, number],
+        ),
+        distanceMeters,
+        durationSeconds,
+        formattedDistance: formatDistance(distanceMeters),
+        formattedDuration: formatDuration(durationSeconds),
+        steps: route.steps,
+      };
+    })
+    .sort((first, second) => {
+      if (first.durationSeconds !== second.durationSeconds) {
+        return first.durationSeconds - second.durationSeconds;
+      }
+      return first.distanceMeters - second.distanceMeters;
+    });
+
+  const shortestDistance = normalized.reduce(
+    (minimum, route) => Math.min(minimum, route.distanceMeters),
+    Infinity,
+  );
+
+  return normalized.map((route, index) => {
+    const tag: RouteDetails['tag'] =
+      index === 0
+        ? 'Fastest'
+        : route.distanceMeters === shortestDistance
+          ? 'Shortest'
+          : 'Alternative';
+    return {
+      ...route,
+      tag,
+      name: route.name || `Route ${index + 1} (${tag})`,
+    };
+  });
 }
 
 function getManeuverIcon(type: string, modifier?: string): string {
@@ -50,10 +183,57 @@ function getManeuverIcon(type: string, modifier?: string): string {
   return '↑';
 }
 
+function parseLaneInstructions(
+  intersections?: OSRMIntersection[],
+): LaneInstruction | undefined {
+  const laneData = intersections?.find(
+    intersection =>
+      Array.isArray(intersection.lanes) && intersection.lanes.length > 0,
+  )?.lanes;
+  if (!laneData) return undefined;
+
+  const lanes = laneData.map(lane => {
+    const indications = Array.isArray(lane.indications)
+      ? lane.indications
+      : [];
+    const indication =
+      indications.find(value => value.includes('left')) ||
+      indications.find(value => value.includes('right')) ||
+      indications.find(value => value === 'straight') ||
+      indications[0] ||
+      'straight';
+    if (indication.includes('left')) return 'left';
+    if (indication.includes('right')) return 'right';
+    return 'straight';
+  });
+  const recommendedIndex = laneData.findIndex(lane => lane.valid === true);
+
+  return {
+    lanes,
+    recommendedLane:
+      recommendedIndex >= 0 ? lanes[recommendedIndex] : undefined,
+  };
+}
+
 export function parseOSRMSteps(rawSteps: OSRMStep[]): NavigationStep[] {
   if (!Array.isArray(rawSteps)) return [];
 
-  return rawSteps.map(step => {
+  return rawSteps
+    .filter(
+      (step): step is OSRMStep =>
+        !!step &&
+        typeof step === 'object' &&
+        !!step.maneuver &&
+        typeof step.maneuver === 'object' &&
+        typeof step.maneuver.type === 'string' &&
+        typeof step.distance === 'number' &&
+        Number.isFinite(step.distance) &&
+        step.distance >= 0 &&
+        typeof step.duration === 'number' &&
+        Number.isFinite(step.duration) &&
+        step.duration >= 0,
+    )
+    .map(step => {
     const type = step.maneuver?.type || 'straight';
     const modifier = step.maneuver?.modifier || '';
     const streetName = step.name ? ` onto ${step.name}` : '';
@@ -76,7 +256,11 @@ export function parseOSRMSteps(rawSteps: OSRMStep[]): NavigationStep[] {
     } else if (type === 'new name' || type === 'continue' || type === 'straight') {
       instruction = `Continue straight${streetName}`.trim();
     } else if (type === 'roundabout' || type === 'rotary') {
-      instruction = `Take roundabout${streetName}`.trim();
+      const exitText =
+        typeof step.maneuver.exit === 'number'
+          ? ` and take exit ${step.maneuver.exit}`
+          : '';
+      instruction = `Enter the roundabout${exitText}${streetName}`.trim();
     } else if (type === 'merge') {
       instruction = `Merge ${modifier}${streetName}`.trim();
     } else if (type === 'fork') {
@@ -88,18 +272,162 @@ export function parseOSRMSteps(rawSteps: OSRMStep[]): NavigationStep[] {
     const distance = Math.round(step.distance || 0);
     const duration = Math.round(step.duration || 0);
 
-    return {
-      instruction: instruction || 'Continue along route',
-      distance,
-      duration,
-      type: type === 'turn' && modifier ? `turn-${modifier}` : type,
-      modifier: modifier || undefined,
-      formattedDistance: formatDistance(distance),
-      iconSymbol: getManeuverIcon(type, modifier),
-      location,
-    };
-  });
+    const lanes = parseLaneInstructions(step.intersections);
+
+      return {
+        instruction: instruction || 'Continue along route',
+        distance,
+        duration,
+        type: type === 'turn' && modifier ? `turn-${modifier}` : type,
+        modifier: modifier || undefined,
+        maneuver: `${type} ${modifier}`.trim(),
+        formattedDistance: formatDistance(distance),
+        iconSymbol: getManeuverIcon(type, modifier),
+        location,
+        lanes,
+      };
+    });
 }
+
+export class OSRMOnlineRoutingProvider implements RoutingProvider {
+  public name = 'OSRM Online Engine';
+  private repo = new OSRMPlanRoutingRepository();
+
+  async getRoute(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+    signal?: AbortSignal,
+  ): Promise<RouteDetails | null> {
+    return this.repo.getRoute(startLat, startLng, endLat, endLng, signal);
+  }
+
+  async getRouteAlternatives(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+    signal?: AbortSignal,
+  ): Promise<RouteDetails[]> {
+    return this.repo.getRouteAlternatives(startLat, startLng, endLat, endLng, signal);
+  }
+}
+
+export class OfflineRoutingProvider implements RoutingProvider {
+  public name = 'Offline Local Graph Engine';
+  private repo = new OfflineGraphRoutingRepository();
+
+  async getRoute(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+  ): Promise<RouteDetails | null> {
+    return this.repo.getRoute(startLat, startLng, endLat, endLng);
+  }
+
+  async getRouteAlternatives(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+  ): Promise<RouteDetails[]> {
+    return this.repo.getRouteAlternatives(startLat, startLng, endLat, endLng);
+  }
+}
+
+export class RoutingService {
+  private onlineRepo: IRoutingRepository = new OSRMPlanRoutingRepository();
+  private offlineRepo: IRoutingRepository = new OfflineGraphRoutingRepository();
+
+  public setRepository(repository: IRoutingRepository) {
+    this.onlineRepo = repository;
+  }
+
+  public setOnlineProvider(_provider: RoutingProvider) {
+    // Kept for backward compatibility
+  }
+
+  public setOfflineProvider(_provider: RoutingProvider) {
+    // Kept for backward compatibility
+  }
+
+  public async getRoute(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+    signal?: AbortSignal,
+  ): Promise<RouteDetails | null> {
+    const routes = await this.getRouteAlternatives(startLat, startLng, endLat, endLng, signal);
+    return routes.length > 0 ? routes[0] : null;
+  }
+
+  public async getRouteAlternatives(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+    signal?: AbortSignal,
+  ): Promise<RouteDetails[]> {
+    if (connectivityService.getMode() === 'offline') {
+      return normalizeAndSortRoutes(
+        await this.offlineRepo.getRouteAlternatives(
+          startLat,
+          startLng,
+          endLat,
+          endLng,
+          signal,
+        ),
+      );
+    }
+
+    try {
+      const results = await this.onlineRepo.getRouteAlternatives(
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        signal,
+      );
+      return normalizeAndSortRoutes(results);
+    } catch (err) {
+      if (
+        err instanceof NoRouteFoundError ||
+        err instanceof InvalidRoutingResponseError ||
+        (err &&
+          typeof err === 'object' &&
+          'name' in err &&
+          (err as { name: string }).name === 'AbortError')
+      ) {
+        return [];
+      }
+      console.warn('Online route search failed:', err);
+      const networkReachable =
+        connectivityService.getMode() === 'online'
+          ? true
+          : await connectivityService.verifyConnection();
+      if (networkReachable) {
+        // Never replace a failed online driving route with an estimated
+        // route while the app is otherwise online.
+        return [];
+      }
+    }
+
+    return normalizeAndSortRoutes(
+      await this.offlineRepo.getRouteAlternatives(
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        signal,
+      ),
+    );
+  }
+}
+
+export const routingService = new RoutingService();
 
 export async function getRoute(
   startLat: number,
@@ -108,49 +436,17 @@ export async function getRoute(
   endLng: number,
   signal?: AbortSignal,
 ): Promise<RouteDetails | null> {
-  try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson&steps=true`;
+  return routingService.getRoute(startLat, startLng, endLat, endLng, signal);
+}
 
-    const response = await fetch(url, { signal });
-
-    if (!response.ok) {
-      throw new Error(`OSRM API HTTP Error: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (
-      !data ||
-      !Array.isArray(data.routes) ||
-      data.routes.length === 0 ||
-      !data.routes[0]?.geometry?.coordinates
-    ) {
-      console.warn('OSRM returned invalid route data:', data);
-      return null;
-    }
-
-    const firstRoute = data.routes[0];
-    const coordinates: [number, number][] = firstRoute.geometry.coordinates;
-    const distanceMeters: number = Math.round(firstRoute.distance || 0);
-    const durationSeconds: number = Math.round(firstRoute.duration || 0);
-    const rawSteps: OSRMStep[] = firstRoute.legs?.[0]?.steps || [];
-    const steps = parseOSRMSteps(rawSteps);
-
-    return {
-      coordinates,
-      distanceMeters,
-      durationSeconds,
-      formattedDistance: formatDistance(distanceMeters),
-      formattedDuration: formatDuration(durationSeconds),
-      steps,
-    };
-  } catch (error: any) {
-    if (error.name === 'AbortError') {
-      return null;
-    }
-    console.warn('Routing Fetch Error:', error);
-    return null;
-  }
+export async function getRouteAlternatives(
+  startLat: number,
+  startLng: number,
+  endLat: number,
+  endLng: number,
+  signal?: AbortSignal,
+): Promise<RouteDetails[]> {
+  return routingService.getRouteAlternatives(startLat, startLng, endLat, endLng, signal);
 }
 
 export const getRouteDetails = getRoute;

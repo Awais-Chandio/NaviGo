@@ -16,6 +16,36 @@ export const TurnInstructionCard: React.FC<TurnInstructionCardProps> = ({
   if (!currentStep) return null;
 
   const dynamicTop = Math.max(insets.top + 10, 16);
+  const laneInfo = currentStep.lanes;
+
+  const renderLaneIcon = (
+    lane: string,
+    isRecommended: boolean,
+    index: number,
+  ) => {
+    let symbol = '⬆';
+    if (lane === 'left') symbol = '⬅';
+    if (lane === 'right') symbol = '➡';
+
+    return (
+      <View
+        key={`${lane}-${index}`}
+        style={[
+          styles.laneChip,
+          isRecommended ? styles.laneChipActive : styles.laneChipInactive,
+        ]}
+      >
+        <Text
+          style={[
+            styles.laneSymbol,
+            isRecommended ? styles.laneSymbolActive : styles.laneSymbolInactive,
+          ]}
+        >
+          {symbol}
+        </Text>
+      </View>
+    );
+  };
 
   return (
     <View style={[styles.bannerContainer, { top: dynamicTop }]}>
@@ -30,6 +60,14 @@ export const TurnInstructionCard: React.FC<TurnInstructionCardProps> = ({
         <Text style={styles.instructionText} numberOfLines={2}>
           {currentStep.instruction}
         </Text>
+
+        {laneInfo && laneInfo.lanes && laneInfo.lanes.length > 0 && (
+          <View style={styles.lanesContainer}>
+            {laneInfo.lanes.map((lane, index) =>
+              renderLaneIcon(lane, lane === laneInfo.recommendedLane, index),
+            )}
+          </View>
+        )}
       </View>
     </View>
   );
@@ -45,7 +83,7 @@ const styles = StyleSheet.create({
     width: '92%',
     zIndex: 30,
     backgroundColor: '#0d652d',
-    borderRadius: 14,
+    borderRadius: 16,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
@@ -56,16 +94,16 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   iconContainer: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 14,
   },
   maneuverIcon: {
-    fontSize: 28,
+    fontSize: 30,
     color: '#ffffff',
     fontWeight: 'bold',
   },
@@ -73,7 +111,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   distanceText: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '800',
     color: '#ffffff',
     marginBottom: 2,
@@ -81,6 +119,35 @@ const styles = StyleSheet.create({
   instructionText: {
     fontSize: 15,
     fontWeight: '600',
+    color: '#e8f0fe',
+  },
+  lanesContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  laneChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  laneChipActive: {
+    backgroundColor: '#ffffff',
+  },
+  laneChipInactive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  laneSymbol: {
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  laneSymbolActive: {
+    color: '#0d652d',
+  },
+  laneSymbolInactive: {
     color: '#e8f0fe',
   },
 });

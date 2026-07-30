@@ -15,21 +15,27 @@ interface NavigationCardProps {
   navigationState: NavigationState;
   destination: DestinationInfo | null;
   isLoadingRoute: boolean;
+  isRerouting?: boolean;
   formattedDistance: string;
   formattedDuration: string;
   remainingDurationSeconds?: number;
+  currentSpeed?: number;
+  currentRoad?: string;
   nextInstruction: string;
   onStartNavigation: () => void;
   onCancelNavigation: () => void;
 }
 
-export const NavigationCard: React.FC<NavigationCardProps> = ({
+export const NavigationCard: React.FC<NavigationCardProps> = React.memo(({
   navigationState,
   destination,
   isLoadingRoute,
+  isRerouting = false,
   formattedDistance,
   formattedDuration,
   remainingDurationSeconds = 0,
+  currentSpeed = 0,
+  currentRoad = '',
   nextInstruction,
   onStartNavigation,
   onCancelNavigation,
@@ -78,10 +84,14 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
       <View style={styles.sheetHandleBar} />
 
       {isNavigating && (
-        <View style={styles.instructionBanner}>
-          <Text style={styles.instructionIcon}>🏎️</Text>
+        <View style={[styles.instructionBanner, isRerouting && styles.reroutingBanner]}>
+          {isRerouting ? (
+            <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 10 }} />
+          ) : (
+            <Text style={styles.instructionIcon}>🏎️</Text>
+          )}
           <Text style={styles.instructionText} numberOfLines={2}>
-            {nextInstruction || 'Continue straight along route'}
+            {isRerouting ? 'Recalculating route...' : nextInstruction || 'Continue straight along route'}
           </Text>
         </View>
       )}
@@ -94,7 +104,7 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
             </Text>
           </View>
           <Text style={styles.destSubtitle} numberOfLines={1}>
-            {destination.subtitle}
+            {currentRoad ? `On: ${currentRoad}` : destination.subtitle}
           </Text>
         </View>
 
@@ -126,7 +136,15 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
           <Text style={styles.metricLabel}>Arrival ETA</Text>
           <Text style={styles.metricValueEta}>{estimatedETA}</Text>
         </View>
+
+        {isNavigating && (
+          <View style={styles.metricBadge}>
+            <Text style={styles.metricLabel}>Speed</Text>
+            <Text style={styles.metricValue}>{currentSpeed} km/h</Text>
+          </View>
+        )}
       </View>
+
 
       {navigationState === 'route_ready' && (
         <View style={styles.actionRow}>
@@ -151,7 +169,7 @@ export const NavigationCard: React.FC<NavigationCardProps> = ({
       )}
     </Animated.View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: {
@@ -187,6 +205,10 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 12,
   },
+  reroutingBanner: {
+    backgroundColor: '#e65100',
+  },
+
   instructionIcon: {
     fontSize: 20,
     marginRight: 10,

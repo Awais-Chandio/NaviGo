@@ -4,6 +4,10 @@ import {
   formatDistance,
   formatDuration,
   calculateBoundingBox,
+  calculateRouteProgress,
+  calculateDynamicETA,
+  getClosestPointOnSegment,
+  isGPSJump,
 } from '../../src/utils/locationUtils';
 
 describe('locationUtils', () => {
@@ -37,5 +41,81 @@ describe('locationUtils', () => {
     ];
     const bbox = calculateBoundingBox(coords);
     expect(bbox).toEqual([67.0, 24.8, 68.3, 25.4]);
+  });
+
+  test('calculateRouteProgress calculates progress %, distance traveled, and remaining distance', () => {
+    const coords: [number, number][] = [
+      [68.3578, 25.3960],
+      [68.3590, 25.3970],
+      [68.3610, 25.3990],
+    ];
+    const res = calculateRouteProgress(25.3960, 68.3578, coords);
+    expect(res.progressPct).toBe(0);
+    expect(res.distanceTraveled).toBe(0);
+    expect(res.remainingDistance).toBeGreaterThan(0);
+  });
+
+  test('calculateRouteProgress scales progress to the selected route distance', () => {
+    const coords: [number, number][] = [
+      [68.0, 25.0],
+      [68.0, 25.01],
+    ];
+    const halfway = calculateRouteProgress(25.005, 68.0, coords, {
+      routeDistanceMeters: 2000,
+    });
+
+    expect(halfway.distanceTraveled).toBeCloseTo(1000, -1);
+    expect(halfway.remainingDistance).toBeCloseTo(1000, -1);
+    expect(halfway.progressPct).toBeCloseTo(50, 0);
+  });
+
+  test('calculateRouteProgress cannot regress or make an implausible jump', () => {
+    const coords: [number, number][] = [
+      [68.0, 25.0],
+      [68.0, 25.01],
+    ];
+    const constrained = calculateRouteProgress(25.009, 68.0, coords, {
+      routeDistanceMeters: 1000,
+      minimumDistanceTraveled: 300,
+      maximumDistanceTraveled: 350,
+    });
+    expect(constrained.distanceTraveled).toBe(350);
+
+    const nonRegressing = calculateRouteProgress(25.001, 68.0, coords, {
+      routeDistanceMeters: 1000,
+      minimumDistanceTraveled: 300,
+    });
+    expect(nonRegressing.distanceTraveled).toBe(300);
+  });
+
+  test('getClosestPointOnSegment returns an on-segment fraction', () => {
+    const projection = getClosestPointOnSegment(
+      25.005,
+      68.001,
+      25.0,
+      68.0,
+      25.01,
+      68.0,
+    );
+    expect(projection.fraction).toBeCloseTo(0.5, 1);
+    expect(projection.latitude).toBeCloseTo(25.005, 4);
+  });
+
+  test('calculateDynamicETA blends GPS speed and initial route speed', () => {
+    const etaRes = calculateDynamicETA(1000, 40, 5000, 600); // 40 km/h GPS speed
+    expect(etaRes.remainingDurationSeconds).toBeGreaterThan(0);
+    expect(etaRes.etaString).toBeDefined();
+  });
+
+  test('calculateDynamicETA falls back to selected route speed without GPS speed', () => {
+    const etaRes = calculateDynamicETA(2500, null, 5000, 600);
+    expect(etaRes.remainingDurationSeconds).toBe(300);
+    expect(etaRes.effectiveSpeedKmH).toBe(30);
+  });
+
+  test('isGPSJump detects sudden impossible location jumps', () => {
+    const now = Date.now();
+    const isJump = isGPSJump(25.3960, 68.3578, now, 25.5000, 68.5000, now + 500); // ~15km in 0.5s
+    expect(isJump).toBe(true);
   });
 });

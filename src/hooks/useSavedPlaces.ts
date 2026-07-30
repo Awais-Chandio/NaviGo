@@ -1,33 +1,40 @@
 import { useState, useCallback, useEffect } from 'react';
-import { storageService, SavedPlace } from '../services/storageService';
+import { storageService } from '../services/storageService';
+import { savedPlacesService } from '../services/SavedPlacesService';
 import { SearchPlaceItem } from '../services/searchService';
+import { SavedPlace } from '../types/places';
 
 export function useSavedPlaces() {
   const [recentSearches, setRecentSearches] = useState<SearchPlaceItem[]>([]);
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
 
-  useEffect(() => {
-    setRecentSearches(storageService.getRecentSearches());
-    setSavedPlaces(storageService.getSavedPlaces());
+  const reloadPlaces = useCallback(async () => {
+    setRecentSearches(await storageService.getRecentSearchesAsync());
+    const places = await savedPlacesService.getSavedPlaces();
+    setSavedPlaces(places);
   }, []);
+
+  useEffect(() => {
+    reloadPlaces();
+  }, [reloadPlaces]);
 
   const addRecentSearch = useCallback((item: SearchPlaceItem) => {
     const updated = storageService.addRecentSearch(item);
     setRecentSearches(updated);
   }, []);
 
-  const savePlace = useCallback((place: SavedPlace) => {
-    const updated = storageService.savePlace(place);
+  const savePlace = useCallback(async (place: SavedPlace) => {
+    const updated = await savedPlacesService.savePlace(place);
     setSavedPlaces(updated);
   }, []);
 
-  const removeSavedPlace = useCallback((id: string) => {
-    const updated = storageService.removeSavedPlace(id);
+  const removeSavedPlace = useCallback(async (id: string) => {
+    const updated = await savedPlacesService.deletePlace(id);
     setSavedPlaces(updated);
   }, []);
 
-  const homePlace = savedPlaces.find(p => p.type === 'home');
-  const workPlace = savedPlaces.find(p => p.type === 'work');
+  const homePlace = savedPlaces.find(p => p.type === 'home' || p.id === 'home');
+  const workPlace = savedPlaces.find(p => p.type === 'work' || p.id === 'work');
 
   return {
     recentSearches,
@@ -37,5 +44,6 @@ export function useSavedPlaces() {
     addRecentSearch,
     savePlace,
     removeSavedPlace,
+    reloadPlaces,
   };
 }

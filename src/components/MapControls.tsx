@@ -11,6 +11,7 @@ interface MapControlsProps {
   onRecenter: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onOpenOfflineMaps?: () => void;
 }
 
 export const MapControls: React.FC<MapControlsProps> = ({
@@ -21,15 +22,26 @@ export const MapControls: React.FC<MapControlsProps> = ({
   onRecenter,
   onZoomIn,
   onZoomOut,
+  onOpenOfflineMaps,
 }) => {
   const insets = useSafeAreaInsets();
 
   const dynamicBottom = hasDestination
-    ? Math.max(insets.bottom + 220, 220)
+    ? Math.max(insets.bottom + 230, 230)
     : Math.max(insets.bottom + 24, 24);
 
   return (
     <View style={[styles.container, { bottom: dynamicBottom }]}>
+      {onOpenOfflineMaps && (
+        <Pressable
+          accessibilityLabel="Offline Maps"
+          style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
+          onPress={onOpenOfflineMaps}
+        >
+          <Text style={styles.iconText}>📥</Text>
+        </Pressable>
+      )}
+
       <Pressable
         accessibilityLabel="Zoom In"
         style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
@@ -90,14 +102,14 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.2,
     shadowRadius: 5,
-    elevation: 5,
+    elevation: 6,
   },
   recenterBtn: {
     width: 54,
@@ -107,7 +119,7 @@ const styles = StyleSheet.create({
   },
   recenterBtnInactive: {
     borderWidth: 2,
-    borderColor: '#1a73e8',
+    borderColor: '#1A73E8',
   },
   zoomText: {
     fontSize: 22,
@@ -116,6 +128,9 @@ const styles = StyleSheet.create({
   },
   compassText: {
     fontSize: 22,
+  },
+  iconText: {
+    fontSize: 20,
   },
   pressed: {
     opacity: 0.8,

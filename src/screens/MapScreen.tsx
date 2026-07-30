@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import { StyleSheet, StatusBar } from 'react-native';
+import { StyleSheet, StatusBar, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Map, Camera, type CameraRef } from '@maplibre/maplibre-react-native';
+import { Map, Camera, ViewAnnotation, type CameraRef } from '@maplibre/maplibre-react-native';
 import { useLocation } from '../hooks/useLocation';
 import { useNavigation } from '../hooks/useNavigation';
 import { useSavedPlaces } from '../hooks/useSavedPlaces';
@@ -14,39 +14,166 @@ import { UserMarker } from '../components/UserMarker';
 import { DestinationMarker } from '../components/DestinationMarker';
 import { AccuracyCircle } from '../components/AccuracyCircle';
 import { RouteLine } from '../components/RouteLine';
-import { SearchPlaceItem } from '../services/searchService';
-import { SavedPlace } from '../services/storageService';
-import { calculateBoundingBox } from '../utils/locationUtils';
+import { TrafficLine } from '../components/TrafficLine';
+import { NearbyPlacesCard } from '../components/NearbyPlacesCard';
+import { RouteAlternativesCard } from '../components/RouteAlternativesCard';
+import { OfflineMapsScreen } from './OfflineMapsScreen';
 
-const LIGHT_MAP_STYLE = 'https://tiles.openfreemap.org/styles/bright';
+import { SearchPlaceItem } from '../services/searchService';
+import { mapService } from '../services/mapService';
+import { nearbyPlacesService } from '../services/NearbyPlacesService';
+import { savedPlacesService } from '../services/SavedPlacesService';
+import { NEARBY_CATEGORIES } from '../config/nearbyCategories';
+import { LOCATION_CONFIG } from '../config/locationConfig';
+import { NearbyCategory, NearbyPlace, SavedPlace } from '../types/places';
+import { calculateBoundingBox, getHaversineDistance } from '../utils/locationUtils';
+import { logger } from '../utils/logger';
+import PersonPinCircle from '../assets/icons/personPinCircle.svg';
 
 export default function MapScreen() {
   const cameraRef = useRef<CameraRef>(null);
+  const followResumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFollowingUser, setIsFollowingUser] = useState<boolean>(true);
   const [currentZoom, setCurrentZoom] = useState<number>(15);
+  const [isOfflineMapsVisible, setIsOfflineMapsVisible] = useState<boolean>(false);
 
-  const { location, refreshLocation } = useLocation();
-  const { recentSearches, savedPlaces, addRecentSearch } = useSavedPlaces();
+  // Nearby & Category search state
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [activeCategoryConfig, setActiveCategoryConfig] = useState<NearbyCategory | null>(null);
+  const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
+  const [isLoadingNearby, setIsLoadingNearby] = useState<boolean>(false);
+  const [nearbyError, setNearbyError] = useState<string | null>(null);
+  const [selectedNearbyPlaceId, setSelectedNearbyPlaceId] = useState<string | null>(null);
 
   const {
     navigationState,
     destination,
+    routes,
+    selectedRouteIndex,
     routeDetails,
     isLoadingRoute,
+    isRerouting,
     currentStep,
     distanceToStep,
     remainingDuration,
     formattedRemainingDistance,
     formattedRemainingDuration,
     currentBearing,
+    currentSpeed,
+    currentRoad,
+    matchedLocation,
     nextInstruction,
     selectDestination,
+    selectRouteIndex,
     startNavigation,
     cancelNavigation,
     handleLocationUpdate,
   } = useNavigation();
+
+  const isNavigating = navigationState === 'navigating';
+  const { location, detectedArea, locationError } = useLocation(isNavigating);
+  const hasValidLocationFix =
+    location.accuracy > 0 &&
+    location.accuracy <=
+      LOCATION_CONFIG.GPS_ACCURACY_MAX_THRESHOLD_METERS;
+  const { recentSearches, savedPlaces, addRecentSearch } = useSavedPlaces();
+
+  useEffect(() => {
+    if (locationError) {
+      setErrorMessage(locationError);
+    }
+  }, [locationError]);
+
+  // Dynamic location update ref for active category search
+  const lastFetchedLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
+  const nearbyAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (
+      selectedCategory &&
+      activeCategoryConfig &&
+      !activeCategoryConfig.isSavedPlace &&
+      hasValidLocationFix
+    ) {
+      if (lastFetchedLocationRef.current) {
+        const distMoved = getHaversineDistance(
+          lastFetchedLocationRef.current.latitude,
+          lastFetchedLocationRef.current.longitude,
+          location.latitude,
+          location.longitude,
+        );
+        if (distMoved < LOCATION_CONFIG.NEARBY_REQUERY_THRESHOLD_METERS) return;
+      }
+
+      lastFetchedLocationRef.current = {
+        latitude: location.latitude,
+        longitude: location.longitude,
+      };
+
+      nearbyAbortRef.current?.abort();
+      const controller = new AbortController();
+      nearbyAbortRef.current = controller;
+      setIsLoadingNearby(true);
+      setNearbyError(null);
+      nearbyPlacesService
+        .searchNearby({
+          latitude: location.latitude,
+          longitude: location.longitude,
+          category: activeCategoryConfig.category,
+          radius: LOCATION_CONFIG.DEFAULT_NEARBY_SEARCH_RADIUS_KM,
+        }, controller.signal)
+        .then(results => {
+          if (!controller.signal.aborted) {
+            setNearbyPlaces(results);
+          }
+        })
+        .catch(err => {
+          if (
+            !controller.signal.aborted &&
+            (!err ||
+              typeof err !== 'object' ||
+              !('name' in err) ||
+              (err as { name: string }).name !== 'AbortError')
+          ) {
+            logger.warn('MapScreen', 'Dynamic nearby search update error:', err);
+            setNearbyError('Unable to load nearby places right now.');
+          }
+        })
+        .finally(() => {
+          if (
+            !controller.signal.aborted &&
+            nearbyAbortRef.current === controller
+          ) {
+            setIsLoadingNearby(false);
+            nearbyAbortRef.current = null;
+          }
+        });
+    }
+    return () => {
+      nearbyAbortRef.current?.abort();
+    };
+  }, [
+    activeCategoryConfig,
+    hasValidLocationFix,
+    location.latitude,
+    location.longitude,
+    selectedCategory,
+  ]);
+
+  // Determine displayed marker location (map matched or raw GPS)
+  const markerLat =
+    isNavigating && matchedLocation && matchedLocation.confidence > 0.4
+      ? matchedLocation.latitude
+      : location.latitude;
+
+  const markerLng =
+    isNavigating && matchedLocation && matchedLocation.confidence > 0.4
+      ? matchedLocation.longitude
+      : location.longitude;
 
   useEffect(() => {
     if (location.latitude && location.longitude) {
@@ -54,32 +181,131 @@ export default function MapScreen() {
         location.latitude,
         location.longitude,
         location.heading,
+        location.accuracy,
+        location.speed,
+        location.timestamp,
       );
+    }
+  }, [
+    handleLocationUpdate,
+    location.accuracy,
+    location.heading,
+    location.latitude,
+    location.longitude,
+    location.speed,
+    location.timestamp,
+  ]);
 
-      if (isFollowingUser && cameraRef.current) {
-        if (navigationState === 'navigating') {
-          cameraRef.current.flyTo({
-            center: [location.longitude, location.latitude],
-            zoom: 17.5,
-            pitch: 50,
-            bearing: currentBearing,
-            duration: 1000,
-          });
-        } else {
-          cameraRef.current.easeTo({
-            center: [location.longitude, location.latitude],
-            duration: 800,
-          });
+  useEffect(() => {
+    if (navigationState === 'navigating') {
+      if (followResumeTimerRef.current) {
+        clearTimeout(followResumeTimerRef.current);
+        followResumeTimerRef.current = null;
+      }
+      setIsFollowingUser(true);
+    }
+  }, [navigationState]);
+
+  useEffect(
+    () => () => {
+      if (followResumeTimerRef.current) {
+        clearTimeout(followResumeTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const lastCameraPosRef = useRef<{ lat: number; lng: number; bearing: number } | null>(null);
+  const lastCameraUpdateTsRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (isFollowingUser && cameraRef.current && location.latitude && location.longitude) {
+      const targetLat = navigationState === 'navigating' ? markerLat : location.latitude;
+      const targetLng = navigationState === 'navigating' ? markerLng : location.longitude;
+      const targetBearing = navigationState === 'navigating' ? currentBearing : 0;
+      const now = Date.now();
+
+      // Cooldown & distance guard to prevent camera animation cancellations & tile thrashing
+      if (lastCameraPosRef.current) {
+        const timeSinceLastUpdate = now - lastCameraUpdateTsRef.current;
+        const distMoved = getHaversineDistance(
+          lastCameraPosRef.current.lat,
+          lastCameraPosRef.current.lng,
+          targetLat,
+          targetLng,
+        );
+        const rawBearingDiff = Math.abs(
+          lastCameraPosRef.current.bearing - targetBearing,
+        );
+        const bearingDiff = Math.min(rawBearingDiff, 360 - rawBearingDiff);
+
+        if (
+          distMoved < 2 &&
+          bearingDiff < 5 &&
+          timeSinceLastUpdate <
+            LOCATION_CONFIG.NAVIGATION_CAMERA_THROTTLE_MS
+        ) {
+          return;
         }
+      }
+
+      lastCameraPosRef.current = { lat: targetLat, lng: targetLng, bearing: targetBearing };
+      lastCameraUpdateTsRef.current = now;
+
+      if (navigationState === 'navigating') {
+        // Destination proximity camera view tuning
+        let targetPitch = 50;
+        let targetZoom = 17.5;
+        let cameraCenter: [number, number] = [targetLng, targetLat];
+
+        if (destination) {
+          const distToDest = getHaversineDistance(
+            targetLat,
+            targetLng,
+            destination.latitude,
+            destination.longitude,
+          );
+          if (distToDest <= 300) {
+            targetPitch = distToDest <= 100 ? 25 : 35;
+            targetZoom = distToDest <= 100 ? 16.5 : 16.8;
+            // Shift the camera toward the destination on final approach. The
+            // user remains visible while both markers share the viewport.
+            const destinationWeight = distToDest <= 100 ? 0.35 : 0.22;
+            cameraCenter = [
+              targetLng +
+                (destination.longitude - targetLng) * destinationWeight,
+              targetLat +
+                (destination.latitude - targetLat) * destinationWeight,
+            ];
+          }
+        }
+
+        cameraRef.current.easeTo({
+          center: cameraCenter,
+          zoom: targetZoom,
+          pitch: targetPitch,
+          bearing: targetBearing,
+          duration: 650,
+        });
+      } else {
+        cameraRef.current.easeTo({
+          center: [targetLng, targetLat],
+          duration: 500,
+        });
       }
     }
   }, [
     currentBearing,
-    handleLocationUpdate,
+    destination,
     isFollowingUser,
-    location,
+    location.latitude,
+    location.longitude,
+    markerLat,
+    markerLng,
     navigationState,
   ]);
+
+
 
   useEffect(() => {
     if (
@@ -100,10 +326,23 @@ export default function MapScreen() {
     if (isFollowingUser) {
       setIsFollowingUser(false);
     }
-  }, [isFollowingUser]);
+    if (followResumeTimerRef.current) {
+      clearTimeout(followResumeTimerRef.current);
+    }
+    if (navigationState === 'navigating') {
+      followResumeTimerRef.current = setTimeout(() => {
+        setIsFollowingUser(true);
+        followResumeTimerRef.current = null;
+      }, LOCATION_CONFIG.NAVIGATION_CAMERA_FOLLOW_RESUME_MS);
+    }
+  }, [isFollowingUser, navigationState]);
 
   const handleSelectPlace = useCallback(
     (item: SearchPlaceItem) => {
+      if (!hasValidLocationFix) {
+        setErrorMessage('Wait for an accurate GPS fix before requesting a route.');
+        return;
+      }
       addRecentSearch(item);
       selectDestination(location.latitude, location.longitude, {
         latitude: item.latitude,
@@ -112,20 +351,150 @@ export default function MapScreen() {
         subtitle: item.subtitle,
       });
     },
-    [addRecentSearch, location.latitude, location.longitude, selectDestination],
+    [
+      addRecentSearch,
+      hasValidLocationFix,
+      location.latitude,
+      location.longitude,
+      selectDestination,
+    ],
   );
 
   const handleSelectSavedPlace = useCallback(
     (saved: SavedPlace) => {
+      if (!hasValidLocationFix) {
+        setErrorMessage('Wait for an accurate GPS fix before requesting a route.');
+        return;
+      }
       selectDestination(location.latitude, location.longitude, {
         latitude: saved.latitude,
         longitude: saved.longitude,
-        title: saved.title,
-        subtitle: saved.subtitle,
+        title: saved.name,
+        subtitle: saved.address,
       });
     },
-    [location.latitude, location.longitude, selectDestination],
+    [
+      hasValidLocationFix,
+      location.latitude,
+      location.longitude,
+      selectDestination,
+    ],
   );
+
+  const handleCategoryPress = useCallback(
+    async (category: NearbyCategory) => {
+      if (selectedCategory === category.id) {
+        setSelectedCategory(null);
+        setActiveCategoryConfig(null);
+        setNearbyPlaces([]);
+        setSelectedNearbyPlaceId(null);
+        return;
+      }
+
+      setSelectedCategory(category.id);
+      setActiveCategoryConfig(category);
+      setSelectedNearbyPlaceId(null);
+      setNearbyError(null);
+      lastFetchedLocationRef.current = null;
+      nearbyAbortRef.current?.abort();
+
+      if (category.isSavedPlace && category.savedType) {
+        setNearbyPlaces([]);
+        const savedPlace = await savedPlacesService.getPlaceByType(category.savedType);
+        if (savedPlace) {
+          if (!hasValidLocationFix) {
+            setErrorMessage(
+              'Wait for an accurate GPS fix before requesting a route.',
+            );
+            return;
+          }
+          selectDestination(location.latitude, location.longitude, {
+            latitude: savedPlace.latitude,
+            longitude: savedPlace.longitude,
+            title: savedPlace.name,
+            subtitle: savedPlace.address,
+          });
+
+          if (cameraRef.current) {
+            cameraRef.current.easeTo({
+              center: [savedPlace.longitude, savedPlace.latitude],
+              zoom: 16,
+              duration: 1000,
+            });
+          }
+          setIsFollowingUser(false);
+        } else {
+          setErrorMessage(
+            `${category.title} is not set. Save a ${category.title.toLowerCase()} location first.`,
+          );
+        }
+      } else {
+        setNearbyPlaces([]);
+        if (!hasValidLocationFix) {
+          setIsLoadingNearby(false);
+          setNearbyError('An accurate GPS fix is required for nearby search.');
+        }
+      }
+    },
+    [
+      hasValidLocationFix,
+      selectedCategory,
+      location.latitude,
+      location.longitude,
+      selectDestination,
+    ],
+  );
+
+  const handleSelectNearbyPlace = useCallback((place: NearbyPlace) => {
+    setSelectedNearbyPlaceId(place.id);
+    if (cameraRef.current) {
+      cameraRef.current.easeTo({
+        center: [place.longitude, place.latitude],
+        zoom: 16,
+        duration: 800,
+      });
+    }
+    setIsFollowingUser(false);
+  }, []);
+
+  const handleNavigateToNearbyPlace = useCallback(
+    (place: NearbyPlace) => {
+      if (!hasValidLocationFix) {
+        setErrorMessage('Wait for an accurate GPS fix before requesting a route.');
+        return;
+      }
+      selectDestination(location.latitude, location.longitude, {
+        latitude: place.latitude,
+        longitude: place.longitude,
+        title: place.name,
+        subtitle: place.address,
+      });
+      if (cameraRef.current) {
+        cameraRef.current.easeTo({
+          center: [place.longitude, place.latitude],
+          zoom: 16,
+          duration: 800,
+        });
+      }
+      setIsFollowingUser(false);
+    },
+    [
+      hasValidLocationFix,
+      location.latitude,
+      location.longitude,
+      selectDestination,
+    ],
+  );
+
+  const handleCloseNearbyCard = useCallback(() => {
+    setSelectedCategory(null);
+    setActiveCategoryConfig(null);
+    setNearbyPlaces([]);
+    setSelectedNearbyPlaceId(null);
+    setNearbyError(null);
+    nearbyAbortRef.current?.abort();
+    nearbyAbortRef.current = null;
+  }, []);
 
   const handleResetCompass = useCallback(() => {
     if (cameraRef.current) {
@@ -140,8 +509,11 @@ export default function MapScreen() {
   }, [currentZoom, location.latitude, location.longitude]);
 
   const handleRecenter = useCallback(() => {
+    if (followResumeTimerRef.current) {
+      clearTimeout(followResumeTimerRef.current);
+      followResumeTimerRef.current = null;
+    }
     setIsFollowingUser(true);
-    refreshLocation();
     if (cameraRef.current) {
       cameraRef.current.flyTo({
         center: [location.longitude, location.latitude],
@@ -156,7 +528,6 @@ export default function MapScreen() {
     location.latitude,
     location.longitude,
     navigationState,
-    refreshLocation,
   ]);
 
   const handleZoomIn = useCallback(() => {
@@ -183,9 +554,14 @@ export default function MapScreen() {
     }
   }, [currentZoom, location.latitude, location.longitude]);
 
+  const showNearbyCard =
+    selectedCategory !== null &&
+    activeCategoryConfig !== null &&
+    !activeCategoryConfig.isSavedPlace;
+
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle={'dark-content'} backgroundColor={'#ffffff'} />
+      <StatusBar barStyle={'dark-content'} backgroundColor={'#FFFFFF'} />
 
       <ErrorToast
         message={errorMessage}
@@ -199,6 +575,7 @@ export default function MapScreen() {
         />
       )}
 
+      {/* Single Unified Header Container */}
       <SearchHeader
         userLocation={{
           latitude: location.latitude,
@@ -207,35 +584,52 @@ export default function MapScreen() {
         navigationState={navigationState}
         recentSearches={recentSearches}
         savedPlaces={savedPlaces}
+        categories={NEARBY_CATEGORIES}
+        selectedCategory={selectedCategory}
+        onCategoryPress={handleCategoryPress}
         onSelectPlace={handleSelectPlace}
         onSelectSavedPlace={handleSelectSavedPlace}
       />
 
       <Map
         style={styles.map}
-        mapStyle={LIGHT_MAP_STYLE}
+        mapStyle={mapService.getActiveStyleUrl()}
         onTouchStart={handleMapTouch}
       >
-        <AccuracyCircle
-          longitude={location.longitude}
-          latitude={location.latitude}
-          accuracy={location.accuracy}
-        />
+        {hasValidLocationFix && (
+          <AccuracyCircle
+            longitude={location.longitude}
+            latitude={location.latitude}
+            accuracy={location.accuracy}
+          />
+        )}
 
-        {routeDetails && <RouteLine coordinates={routeDetails.coordinates} />}
+        {routeDetails && (
+          <>
+            <RouteLine coordinates={routeDetails.coordinates} />
+            <TrafficLine
+              coordinates={routeDetails.coordinates}
+              visible={navigationState === 'navigating' || navigationState === 'route_ready'}
+            />
+          </>
+        )}
 
         <Camera
           ref={cameraRef}
-          zoom={currentZoom}
-          center={[location.longitude, location.latitude]}
+          initialViewState={{
+            zoom: currentZoom,
+            center: [markerLng, markerLat],
+          }}
         />
 
-        <UserMarker
-          longitude={location.longitude}
-          latitude={location.latitude}
-          bearing={currentBearing}
-          isNavigating={navigationState === 'navigating'}
-        />
+        {hasValidLocationFix && (
+          <UserMarker
+            longitude={markerLng}
+            latitude={markerLat}
+            bearing={currentBearing}
+            isNavigating={navigationState === 'navigating'}
+          />
+        )}
 
         {destination && (
           <DestinationMarker
@@ -243,6 +637,28 @@ export default function MapScreen() {
             latitude={destination.latitude}
           />
         )}
+
+        {nearbyPlaces.map(place => (
+          <ViewAnnotation
+            key={place.id}
+            id={`nearby-place-${place.id}`}
+            lngLat={[place.longitude, place.latitude]}
+          >
+            <TouchableOpacity
+              onPress={() => handleSelectNearbyPlace(place)}
+              activeOpacity={0.8}
+              style={styles.nearbyMarker}
+            >
+              <PersonPinCircle
+                width={selectedNearbyPlaceId === place.id ? 40 : 32}
+                height={selectedNearbyPlaceId === place.id ? 40 : 32}
+                fill={selectedNearbyPlaceId === place.id ? '#1A73E8' : '#EA4335'}
+                stroke="#FFFFFF"
+                strokeWidth={1.5}
+              />
+            </TouchableOpacity>
+          </ViewAnnotation>
+        ))}
       </Map>
 
       <MapControls
@@ -253,18 +669,64 @@ export default function MapScreen() {
         onRecenter={handleRecenter}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
+        onOpenOfflineMaps={() => setIsOfflineMapsVisible(true)}
       />
 
-      <NavigationCard
-        navigationState={navigationState}
-        destination={destination}
-        isLoadingRoute={isLoadingRoute}
-        formattedDistance={formattedRemainingDistance}
-        formattedDuration={formattedRemainingDuration}
-        remainingDurationSeconds={remainingDuration}
-        nextInstruction={nextInstruction}
-        onStartNavigation={startNavigation}
-        onCancelNavigation={cancelNavigation}
+      {showNearbyCard && (
+        <NearbyPlacesCard
+          categoryTitle={activeCategoryConfig.title}
+          categoryIcon={activeCategoryConfig.icon}
+          detectedArea={detectedArea}
+          places={nearbyPlaces}
+          isLoading={isLoadingNearby}
+          selectedPlaceId={selectedNearbyPlaceId}
+          error={nearbyError}
+          onSelectPlace={handleSelectNearbyPlace}
+          onNavigateToPlace={handleNavigateToNearbyPlace}
+          onClose={handleCloseNearbyCard}
+        />
+      )}
+
+      {navigationState === 'route_ready' && destination && routes.length > 0 && (
+        <RouteAlternativesCard
+          routes={routes}
+          selectedIndex={selectedRouteIndex}
+          destinationTitle={destination.title}
+          onSelectRouteIndex={selectRouteIndex}
+          onStartNavigation={startNavigation}
+          onCancel={cancelNavigation}
+        />
+      )}
+
+      {navigationState === 'navigating' && (
+        <NavigationCard
+          navigationState={navigationState}
+          destination={destination}
+          isLoadingRoute={isLoadingRoute}
+          isRerouting={isRerouting}
+          formattedDistance={formattedRemainingDistance}
+          formattedDuration={formattedRemainingDuration}
+          remainingDurationSeconds={remainingDuration}
+          currentSpeed={currentSpeed}
+          currentRoad={currentRoad}
+          nextInstruction={nextInstruction}
+          onStartNavigation={startNavigation}
+          onCancelNavigation={cancelNavigation}
+        />
+      )}
+
+
+      <OfflineMapsScreen
+        visible={isOfflineMapsVisible}
+        userLocation={
+          hasValidLocationFix
+            ? {
+                latitude: location.latitude,
+                longitude: location.longitude,
+              }
+            : undefined
+        }
+        onClose={() => setIsOfflineMapsVisible(false)}
       />
     </SafeAreaView>
   );
@@ -273,9 +735,13 @@ export default function MapScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#FFFFFF',
   },
   map: {
     flex: 1,
+  },
+  nearbyMarker: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

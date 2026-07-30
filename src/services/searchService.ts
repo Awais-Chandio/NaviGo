@@ -1,4 +1,10 @@
-import { getHaversineDistance, formatDistance } from '../utils/locationUtils';
+import {
+  ISearchRepository,
+  NominatimSearchRepository,
+  PhotonSearchRepository,
+  detectCategory,
+  parseNominatimTitleAndSubtitle,
+} from '../repositories/SearchRepository';
 
 export interface SearchPlaceItem {
   id: string | number;
@@ -11,7 +17,19 @@ export interface SearchPlaceItem {
   formattedDistance?: string;
   categoryIcon?: string;
   categoryName?: string;
-  raw?: any;
+  raw?: unknown;
+}
+
+export interface SearchResult {
+  id: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  category: string;
+  distanceMeters?: number;
+  formattedDistance?: string;
+  source?: 'recent' | 'saved' | 'nearby' | 'search' | 'category';
 }
 
 export interface SearchOptions {
@@ -24,172 +42,28 @@ export interface SearchOptions {
   signal?: AbortSignal;
 }
 
+export interface UnifiedSearchSuggestions {
+  recent: SearchResult[];
+  saved: SearchResult[];
+  nearby: SearchResult[];
+  searchResults: SearchResult[];
+}
+
 export interface PlacesProvider {
   searchPlaces(query: string, options?: SearchOptions): Promise<SearchPlaceItem[]>;
   reverseGeocode(latitude: number, longitude: number, signal?: AbortSignal): Promise<string>;
 }
 
-export function detectCategory(
-  displayName: string,
-  categoryType?: string,
-): { icon: string; name: string } {
-  const text = (displayName + ' ' + (categoryType || '')).toLowerCase();
+export { detectCategory, parseNominatimTitleAndSubtitle };
 
-  if (text.includes('fuel') || text.includes('gas') || text.includes('petrol') || text.includes('cng') || text.includes('pso') || text.includes('shell') || text.includes('total')) {
-    return { icon: '⛽', name: 'Gas Station' };
-  }
-  if (text.includes('restaurant') || text.includes('food') || text.includes('cafe') || text.includes('biryani') || text.includes('pizza') || text.includes('burger') || text.includes('dining')) {
-    return { icon: '🍔', name: 'Restaurant' };
-  }
-  if (text.includes('hospital') || text.includes('clinic') || text.includes('medical') || text.includes('pharmacy') || text.includes('doctor') || text.includes('health')) {
-    return { icon: '🏥', name: 'Hospital' };
-  }
-  if (text.includes('atm') || text.includes('bank') || text.includes('hbl') || text.includes('mcb') || text.includes('meezan') || text.includes('ubl') || text.includes('cash')) {
-    return { icon: '🏧', name: 'ATM & Bank' };
-  }
-  if (text.includes('hotel') || text.includes('resort') || text.includes('lodging') || text.includes('inn') || text.includes('stay')) {
-    return { icon: '🏨', name: 'Hotel' };
-  }
-  if (text.includes('mall') || text.includes('market') || text.includes('bazaar') || text.includes('shopping') || text.includes('store') || text.includes('supermarket')) {
-    return { icon: '🛒', name: 'Shopping' };
-  }
-  if (text.includes('mosque') || text.includes('masjid') || text.includes('jamia')) {
-    return { icon: '🕌', name: 'Mosque' };
-  }
-  if (text.includes('airport') || text.includes('aerodrome')) {
-    return { icon: '✈️', name: 'Airport' };
-  }
-  if (text.includes('park') || text.includes('garden') || text.includes('ground')) {
-    return { icon: '🏞️', name: 'Park' };
-  }
-  if (text.includes('school') || text.includes('university') || text.includes('college')) {
-    return { icon: '🏫', name: 'Education' };
-  }
+export class NominatimPlacesProvider implements PlacesProvider {
+  private repository: ISearchRepository = new PhotonSearchRepository();
 
-  return { icon: '📍', name: 'Location' };
-}
-
-function parseNominatimTitleAndSubtitle(displayName: string): {
-  title: string;
-  subtitle: string;
-} {
-  if (!displayName) {
-    return { title: 'Unknown Place', subtitle: '' };
-  }
-
-  const parts = displayName.split(',').map(p => p.trim());
-  const title = parts[0] || displayName;
-  const subtitle = parts.slice(1).join(', ');
-
-  return { title, subtitle };
-}
-
-class NominatimPlacesProvider implements PlacesProvider {
   async searchPlaces(
     query: string,
     options?: SearchOptions,
   ): Promise<SearchPlaceItem[]> {
-    const trimmedQuery = query.trim();
-    if (trimmedQuery.length < 2) {
-      return [];
-    }
-
-    try {
-      const countryCode = options?.countryCode ?? 'pk';
-      const limit = options?.limit ?? 10;
-      const userLoc = options?.userLocation;
-
-      let viewboxParam = '';
-      if (userLoc?.latitude && userLoc?.longitude) {
-        const delta = 1.5;
-        const left = userLoc.longitude - delta;
-        const top = userLoc.latitude + delta;
-        const right = userLoc.longitude + delta;
-        const bottom = userLoc.latitude - delta;
-        viewboxParam = `&viewbox=${left},${top},${right},${bottom}&bounded=0`;
-      }
-
-      const primaryUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
-        trimmedQuery,
-      )}&accept-language=en&countrycodes=${countryCode}&limit=${limit}${viewboxParam}`;
-
-      let response = await fetch(primaryUrl, {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': 'NaviGo/1.0',
-        },
-        signal: options?.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Search API HTTP Error: ${response.status}`);
-      }
-
-      let data = await response.json();
-
-      if ((!Array.isArray(data) || data.length === 0) && countryCode) {
-        const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
-          trimmedQuery,
-        )}&accept-language=en&limit=${limit}`;
-
-        response = await fetch(fallbackUrl, {
-          headers: {
-            Accept: 'application/json',
-            'User-Agent': 'NaviGo/1.0',
-          },
-          signal: options?.signal,
-        });
-
-        if (response.ok) {
-          data = await response.json();
-        }
-      }
-
-      if (!Array.isArray(data)) {
-        return [];
-      }
-
-      const results: SearchPlaceItem[] = data.map((item: any) => {
-        const { title, subtitle } = parseNominatimTitleAndSubtitle(
-          item.display_name,
-        );
-        const lat = parseFloat(item.lat);
-        const lon = parseFloat(item.lon);
-        const category = detectCategory(item.display_name, item.type || item.category);
-
-        let distanceMeters: number | undefined;
-        let formattedDist: string | undefined;
-
-        if (userLoc?.latitude && userLoc?.longitude) {
-          distanceMeters = Math.round(
-            getHaversineDistance(userLoc.latitude, userLoc.longitude, lat, lon),
-          );
-          formattedDist = formatDistance(distanceMeters);
-        }
-
-        return {
-          id: item.place_id,
-          title,
-          subtitle,
-          latitude: lat,
-          longitude: lon,
-          displayName: item.display_name,
-          distanceMeters,
-          formattedDistance: formattedDist,
-          categoryIcon: category.icon,
-          categoryName: category.name,
-          raw: item,
-        };
-      });
-
-      return results;
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        return [];
-      }
-      console.warn('Search Places Error:', error);
-      return [];
-    }
+    return this.repository.searchPlaces(query, options);
   }
 
   async reverseGeocode(
@@ -197,42 +71,120 @@ class NominatimPlacesProvider implements PlacesProvider {
     longitude: number,
     signal?: AbortSignal,
   ): Promise<string> {
-    try {
-      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&accept-language=en`;
-      const response = await fetch(url, {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': 'NaviGo/1.0',
-        },
-        signal,
-      });
+    return this.repository.reverseGeocode(latitude, longitude, signal);
+  }
 
-      if (!response.ok) {
-        return 'Address not found';
-      }
-
-      const data = await response.json();
-      return data.display_name || 'Address not found';
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        return '';
-      }
-      return 'Address unavailable';
-    }
+  async reverseGeocodeDetails(
+    latitude: number,
+    longitude: number,
+    signal?: AbortSignal,
+  ): Promise<{ displayName: string; detectedArea: string }> {
+    return this.repository.reverseGeocodeDetails(latitude, longitude, signal);
   }
 }
 
-let activePlacesProvider: PlacesProvider = new NominatimPlacesProvider();
+export class OfflinePlacesProvider implements PlacesProvider {
+  private localDatabasePath: string = '/data/user/0/com.navigo/files/offline_tiles/places.sqlite';
+
+  async searchPlaces(
+    query: string,
+    _options?: SearchOptions,
+  ): Promise<SearchPlaceItem[]> {
+    console.log(`[OfflinePlacesProvider] Searching local database (${this.localDatabasePath}) for: "${query}"`);
+    return [];
+  }
+
+  async reverseGeocode(
+    latitude: number,
+    longitude: number,
+    _signal?: AbortSignal,
+  ): Promise<string> {
+    console.log(`[OfflinePlacesProvider] Reverse geocoding offline coordinate: ${latitude}, ${longitude}`);
+    return `Offline Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`;
+  }
+}
+
+export class SearchService {
+  private repository: ISearchRepository;
+
+  constructor(repository?: ISearchRepository) {
+    this.repository = repository || new PhotonSearchRepository();
+  }
+
+  public setRepository(repository: ISearchRepository) {
+    this.repository = repository;
+  }
+
+  public setOnlineProvider(provider: PlacesProvider) {
+    // Kept for backward compatibility
+  }
+
+  public setOfflineProvider(provider: PlacesProvider) {
+    // Kept for backward compatibility
+  }
+
+  public async searchPlaces(
+    query: string,
+    options?: SearchOptions,
+  ): Promise<SearchPlaceItem[]> {
+    return this.repository.searchPlaces(query, options);
+  }
+
+  public async reverseGeocode(
+    latitude: number,
+    longitude: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return this.repository.reverseGeocode(latitude, longitude, signal);
+  }
+
+  public async reverseGeocodeDetails(
+    latitude: number,
+    longitude: number,
+    signal?: AbortSignal,
+  ): Promise<{ displayName: string; detectedArea: string }> {
+    return this.repository.reverseGeocodeDetails(latitude, longitude, signal);
+  }
+
+  public async search(
+    query: string,
+    userLocation?: { latitude: number; longitude: number },
+    signal?: AbortSignal,
+  ): Promise<SearchResult[]> {
+    const items = await this.searchPlaces(query, { userLocation, signal });
+    return items.map(item => ({
+      id: String(item.id),
+      name: item.title,
+      address: item.subtitle,
+      latitude: item.latitude,
+      longitude: item.longitude,
+      category: item.categoryName || 'Location',
+      distanceMeters: item.distanceMeters,
+      formattedDistance: item.formattedDistance,
+      source: 'search',
+    }));
+  }
+
+  public async getSuggestions(
+    query: string,
+    userLocation?: { latitude: number; longitude: number },
+    signal?: AbortSignal,
+  ): Promise<UnifiedSearchSuggestions> {
+    return this.repository.getSuggestions(query, userLocation, signal);
+  }
+}
+
+export const searchService = new SearchService();
 
 export function setPlacesProvider(provider: PlacesProvider) {
-  activePlacesProvider = provider;
+  searchService.setOnlineProvider(provider);
 }
 
 export async function searchPlaces(
   query: string,
   options?: SearchOptions,
 ): Promise<SearchPlaceItem[]> {
-  return activePlacesProvider.searchPlaces(query, options);
+  return searchService.searchPlaces(query, options);
 }
 
 export async function reverseGeocode(
@@ -240,5 +192,13 @@ export async function reverseGeocode(
   longitude: number,
   signal?: AbortSignal,
 ): Promise<string> {
-  return activePlacesProvider.reverseGeocode(latitude, longitude, signal);
+  return searchService.reverseGeocode(latitude, longitude, signal);
+}
+
+export async function reverseGeocodeDetails(
+  latitude: number,
+  longitude: number,
+  signal?: AbortSignal,
+): Promise<{ displayName: string; detectedArea: string }> {
+  return searchService.reverseGeocodeDetails(latitude, longitude, signal);
 }

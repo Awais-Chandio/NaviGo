@@ -1,8 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
-  TextInput,
   StyleSheet,
   FlatList,
   Pressable,
@@ -13,54 +12,103 @@ import { geocodingService } from '../services/geocodingService';
 import { type SearchPlaceItem } from '../services/searchService';
 import { SavedPlace } from '../services/storageService';
 import { NavigationState } from '../hooks/useNavigation';
-
-import { ScrollView } from 'react-native';
+import { SearchBar } from './SearchBar';
+import { NearbyCategoryBar } from './NearbyCategoryBar';
+import { NearbyCategory } from '../types/places';
 
 interface SearchHeaderProps {
   userLocation: { latitude: number; longitude: number };
   navigationState: NavigationState;
   recentSearches: SearchPlaceItem[];
   savedPlaces: SavedPlace[];
+  categories?: NearbyCategory[];
+  selectedCategory?: string | null;
+  onCategoryPress?: (category: NearbyCategory) => void;
   onSelectPlace: (item: SearchPlaceItem) => void;
   onSelectSavedPlace?: (place: SavedPlace) => void;
 }
 
-const CATEGORY_CHIPS = [
-  { id: 'gas', title: 'Gas', icon: '⛽', query: 'fuel station' },
-  { id: 'food', title: 'Food', icon: '🍔', query: 'restaurant' },
-  { id: 'hospital', title: 'Hospital', icon: '🏥', query: 'hospital' },
-  { id: 'atm', title: 'ATM', icon: '🏧', query: 'atm bank' },
-  { id: 'hotel', title: 'Hotel', icon: '🏨', query: 'hotel' },
-  { id: 'shop', title: 'Shopping', icon: '🛒', query: 'shopping mall' },
-  { id: 'mosque', title: 'Mosque', icon: '🕌', query: 'mosque' },
-];
+const ItemSeparator = React.memo(() => <View style={styles.divider} />);
 
-const ItemSeparator: React.FC = () => <View style={styles.divider} />;
+const SearchResultCardItem = React.memo(({
+  item,
+  onPress,
+}: {
+  item: SearchPlaceItem;
+  onPress: (item: SearchPlaceItem) => void;
+}) => {
+  return (
+    <Pressable
+      onPress={() => onPress(item)}
+      style={({ pressed }) => [
+        styles.searchResultItem,
+        pressed && styles.itemPressed,
+      ]}
+    >
+      <View style={styles.iconContainer}>
+        <Text style={styles.pinIcon}>{item.categoryIcon || '📍'}</Text>
+      </View>
+      <View style={styles.textContainer}>
+        <View style={styles.titleRow}>
+          <Text style={styles.resultTitle} numberOfLines={1}>
+            {item.title}
+          </Text>
+          {item.categoryName ? (
+            <View style={styles.categoryBadge}>
+              <Text style={styles.categoryBadgeText}>{item.categoryName}</Text>
+            </View>
+          ) : null}
+        </View>
+        {item.subtitle ? (
+          <Text style={styles.resultSubtitle} numberOfLines={1}>
+            {item.subtitle}
+          </Text>
+        ) : null}
+      </View>
+
+      {item.formattedDistance && (
+        <View style={styles.distanceBadge}>
+          <Text style={styles.distanceBadgeText}>
+            {item.formattedDistance}
+          </Text>
+        </View>
+      )}
+    </Pressable>
+  );
+});
 
 export const SearchHeader: React.FC<SearchHeaderProps> = ({
   userLocation,
   navigationState,
   recentSearches,
-  savedPlaces,
+  categories,
+  selectedCategory = null,
+  onCategoryPress,
   onSelectPlace,
-  onSelectSavedPlace,
 }) => {
   const insets = useSafeAreaInsets();
   const [searchText, setSearchText] = useState<string>('');
   const [searchResults, setSearchResults] = useState<SearchPlaceItem[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [hasSearched, setHasSearched] = useState<boolean>(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [isFocused, setIsFocused] = useState<boolean>(false);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
 
-  if (navigationState === 'navigating') {
-    return null;
-  }
+  useEffect(() => {
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+      if (searchAbortRef.current) {
+        searchAbortRef.current.abort();
+      }
+    };
+  }, []);
 
-  const executeSearch = async (text: string) => {
+  const executeSearch = useCallback(async (text: string) => {
     if (searchAbortRef.current) {
       searchAbortRef.current.abort();
     }
@@ -69,21 +117,52 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
     setIsSearching(true);
     setHasSearched(true);
+    setSearchError(null);
 
-    const results = await geocodingService.searchPlaces(text, {
-      userLocation,
-      countryCode: 'pk',
-      limit: 10,
-      signal: controller.signal,
-    });
+    try {
+      const locationToUse =
+        userLocation?.latitude && userLocation?.longitude
+          ? userLocation
+          : { latitude: 25.396, longitude: 68.3578 };
 
-    setIsSearching(false);
-    setSearchResults(results);
-  };
+      const results = await geocodingService.searchPlaces(text, {
+        userLocation: locationToUse,
+        limit: 15,
+        signal: controller.signal,
+      });
 
-  const handleTextChange = (text: string) => {
+      if (
+        controller.signal.aborted ||
+        searchAbortRef.current !== controller
+      ) {
+        return;
+      }
+      setIsSearching(false);
+      setSearchResults(results);
+    } catch (err) {
+      if (
+        err &&
+        typeof err === 'object' &&
+        'name' in err &&
+        (err as { name: string }).name === 'AbortError'
+      ) {
+        return;
+      }
+      if (searchAbortRef.current !== controller) {
+        return;
+      }
+      setIsSearching(false);
+      setSearchError('Unable to fetch search results. Please check connection.');
+      setSearchResults([]);
+    } finally {
+      if (searchAbortRef.current === controller) {
+        searchAbortRef.current = null;
+      }
+    }
+  }, [userLocation]);
+
+  const handleTextChange = useCallback((text: string) => {
     setSearchText(text);
-    setSelectedCategory(null);
 
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
@@ -93,6 +172,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       setSearchResults([]);
       setIsSearching(false);
       setHasSearched(false);
+      setSearchError(null);
       if (searchAbortRef.current) {
         searchAbortRef.current.abort();
       }
@@ -101,159 +181,85 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
     searchTimeoutRef.current = setTimeout(() => {
       executeSearch(text);
-    }, 500);
-  };
+    }, 350);
+  }, [executeSearch]);
 
-  const handleCategoryPress = (cat: typeof CATEGORY_CHIPS[0]) => {
-    setSearchText(cat.title);
-    setSelectedCategory(cat.id);
-    executeSearch(cat.query);
-  };
-
-  const handleSelectItem = (item: SearchPlaceItem) => {
+  const handleSelectItem = useCallback((item: SearchPlaceItem) => {
     setSearchText(item.title);
     setSearchResults([]);
     setIsFocused(false);
     onSelectPlace(item);
-  };
+  }, [onSelectPlace]);
 
-  const handleSelectSaved = (saved: SavedPlace) => {
-    setIsFocused(false);
-    setSearchResults([]);
-    if (onSelectSavedPlace) {
-      onSelectSavedPlace(saved);
-    } else {
-      handleSelectItem({
-        id: saved.id,
-        title: saved.title,
-        subtitle: saved.subtitle,
-        latitude: saved.latitude,
-        longitude: saved.longitude,
-        displayName: `${saved.title}, ${saved.subtitle}`,
-      });
+  const handleClearText = useCallback(() => {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
     }
-  };
-
-  const handleClearText = () => {
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+      searchAbortRef.current = null;
+    }
     setSearchText('');
     setSearchResults([]);
+    setIsSearching(false);
     setHasSearched(false);
-    setSelectedCategory(null);
-  };
+    setSearchError(null);
+  }, []);
+
+  const getItemLayout = useCallback(
+    (_data: unknown, index: number) => ({
+      length: 64,
+      offset: 64 * index,
+      index,
+    }),
+    [],
+  );
+
+  if (navigationState === 'navigating') {
+    return null;
+  }
 
   return (
-    <View style={[styles.searchCard, { top: Math.max(insets.top + 10, 16) }]}>
-      <View style={styles.searchInputRow}>
-        <Text style={styles.searchIcon}>🔍</Text>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search destination, food, fuel, atm in Pakistan..."
-          placeholderTextColor="#757575"
-          value={searchText}
-          onChangeText={handleTextChange}
-          onFocus={() => setIsFocused(true)}
-          returnKeyType="search"
-          clearButtonMode="while-editing"
-        />
-        {isSearching && (
-          <ActivityIndicator
-            size="small"
-            color="#1a73e8"
-            style={styles.searchSpinner}
+    <View style={[styles.container, { top: Math.max(insets.top + 8, 14) }]}>
+      {/* Search Input Bar */}
+      <SearchBar
+        value={searchText}
+        placeholder="Search destination, fuel, food, atm..."
+        isLoading={isSearching}
+        onChangeText={handleTextChange}
+        onClear={handleClearText}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
+      />
+
+      {/* Category Chips Row */}
+      {searchText.length === 0 && categories && onCategoryPress && (
+        <View style={styles.categoryBarWrapper}>
+          <NearbyCategoryBar
+            categories={categories}
+            selectedCategory={selectedCategory}
+            onCategoryPress={onCategoryPress}
           />
-        )}
-        {searchText.length > 0 && !isSearching && (
-          <Pressable onPress={handleClearText} style={styles.clearButton}>
-            <Text style={styles.clearText}>✕</Text>
-          </Pressable>
-        )}
-      </View>
-
-      {/* Quick Category & Saved Places Chips Row */}
-      {searchText.length === 0 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.savedRow}
-        >
-          {savedPlaces.map(place => (
-            <Pressable
-              key={`saved-${place.id}`}
-              onPress={() => handleSelectSaved(place)}
-              style={styles.savedChip}
-            >
-              <Text style={styles.chipIcon}>
-                {place.type === 'home'
-                  ? '🏠'
-                  : place.type === 'work'
-                  ? '💼'
-                  : '⭐'}
-              </Text>
-              <Text style={styles.chipText}>{place.title}</Text>
-            </Pressable>
-          ))}
-
-          {CATEGORY_CHIPS.map(cat => (
-            <Pressable
-              key={`cat-${cat.id}`}
-              onPress={() => handleCategoryPress(cat)}
-              style={[
-                styles.categoryChip,
-                selectedCategory === cat.id && styles.categoryChipActive,
-              ]}
-            >
-              <Text style={styles.chipIcon}>{cat.icon}</Text>
-              <Text
-                style={[
-                  styles.categoryChipText,
-                  selectedCategory === cat.id && styles.categoryChipTextActive,
-                ]}
-              >
-                {cat.title}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        </View>
       )}
 
+      {/* Search Results / Suggestions Overlay */}
       {searchResults.length > 0 ? (
         <View style={styles.suggestionsContainer}>
           <FlatList
             data={searchResults}
-            keyExtractor={item => item.id.toString()}
+            keyExtractor={item => String(item.id)}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             ItemSeparatorComponent={ItemSeparator}
+            getItemLayout={getItemLayout}
+            initialNumToRender={8}
+            maxToRenderPerBatch={10}
+            windowSize={5}
+            removeClippedSubviews={true}
             renderItem={({ item }) => (
-              <Pressable
-                onPress={() => handleSelectItem(item)}
-                style={({ pressed }) => [
-                  styles.searchResultItem,
-                  pressed && styles.itemPressed,
-                ]}
-              >
-                <View style={styles.iconContainer}>
-                  <Text style={styles.pinIcon}>{item.categoryIcon || '📍'}</Text>
-                </View>
-                <View style={styles.textContainer}>
-                  <Text style={styles.resultTitle} numberOfLines={1}>
-                    {item.title}
-                  </Text>
-                  {item.subtitle ? (
-                    <Text style={styles.resultSubtitle} numberOfLines={1}>
-                      {item.subtitle}
-                    </Text>
-                  ) : null}
-                </View>
-
-                {item.formattedDistance && (
-                  <View style={styles.distanceBadge}>
-                    <Text style={styles.distanceBadgeText}>
-                      {item.formattedDistance}
-                    </Text>
-                  </View>
-                )}
-              </Pressable>
+              <SearchResultCardItem item={item} onPress={handleSelectItem} />
             )}
           />
         </View>
@@ -266,41 +272,28 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             ItemSeparatorComponent={ItemSeparator}
+            getItemLayout={getItemLayout}
+            initialNumToRender={8}
+            maxToRenderPerBatch={10}
+            windowSize={5}
+            removeClippedSubviews={true}
             renderItem={({ item }) => (
-              <Pressable
-                onPress={() => handleSelectItem(item)}
-                style={({ pressed }) => [
-                  styles.searchResultItem,
-                  pressed && styles.itemPressed,
-                ]}
-              >
-                <View style={styles.iconContainer}>
-                  <Text style={styles.pinIcon}>{item.categoryIcon || '🕒'}</Text>
-                </View>
-                <View style={styles.textContainer}>
-                  <Text style={styles.resultTitle} numberOfLines={1}>
-                    {item.title}
-                  </Text>
-                  {item.subtitle ? (
-                    <Text style={styles.resultSubtitle} numberOfLines={1}>
-                      {item.subtitle}
-                    </Text>
-                  ) : null}
-                </View>
-                {item.formattedDistance && (
-                  <View style={styles.distanceBadge}>
-                    <Text style={styles.distanceBadgeText}>
-                      {item.formattedDistance}
-                    </Text>
-                  </View>
-                )}
-              </Pressable>
+              <SearchResultCardItem item={item} onPress={handleSelectItem} />
             )}
           />
         </View>
+      ) : isSearching ? (
+        <View style={styles.statusContainer}>
+          <ActivityIndicator size="small" color="#1A73E8" />
+          <Text style={styles.statusText}>Searching places...</Text>
+        </View>
+      ) : searchError ? (
+        <View style={styles.statusContainer}>
+          <Text style={styles.errorText}>{searchError}</Text>
+        </View>
       ) : hasSearched && !isSearching && searchText.length >= 2 ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>No locations found</Text>
+        <View style={styles.statusContainer}>
+          <Text style={styles.emptyText}>No matching places found</Text>
         </View>
       ) : null}
     </View>
@@ -308,101 +301,34 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 };
 
 const styles = StyleSheet.create({
-  searchCard: {
+  container: {
     position: 'absolute',
     left: 16,
     right: 16,
     maxWidth: 600,
     alignSelf: 'center',
     width: '92%',
-    zIndex: 10,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 6,
+    zIndex: 20,
   },
-  searchInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    height: 52,
-  },
-  searchIcon: {
-    fontSize: 16,
-    marginRight: 10,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    color: '#202124',
-    paddingVertical: 8,
-  },
-  searchSpinner: {
-    marginLeft: 8,
-  },
-  clearButton: {
-    padding: 6,
-    marginLeft: 4,
-  },
-  clearText: {
-    fontSize: 16,
-    color: '#70757a',
-    fontWeight: 'bold',
-  },
-  savedRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 14,
-    paddingBottom: 10,
-    gap: 8,
-  },
-  savedChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#e8f0fe',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
-  chipIcon: {
-    fontSize: 13,
-    marginRight: 6,
-  },
-  chipText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a73e8',
-  },
-  categoryChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f1f3f4',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
-  categoryChipActive: {
-    backgroundColor: '#1a73e8',
-  },
-  categoryChipText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#3c4043',
-  },
-  categoryChipTextActive: {
-    color: '#ffffff',
+  categoryBarWrapper: {
+    marginTop: 8,
   },
   suggestionsContainer: {
     maxHeight: 320,
-    borderTopWidth: 1,
-    borderTopColor: '#f1f3f4',
+    marginTop: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    elevation: 8,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    overflow: 'hidden',
   },
   sectionHeader: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
-    color: '#70757a',
+    color: '#70757A',
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 4,
@@ -411,41 +337,58 @@ const styles = StyleSheet.create({
   searchResultItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
+    height: 64,
     paddingHorizontal: 14,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#FFFFFF',
   },
   itemPressed: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#F5F5F5',
   },
   iconContainer: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#f1f3f4',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#F1F3F4',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
   },
   pinIcon: {
-    fontSize: 16,
+    fontSize: 18,
   },
   textContainer: {
     flex: 1,
     marginRight: 8,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
   resultTitle: {
     fontSize: 15,
     fontWeight: '600',
     color: '#202124',
-    marginBottom: 2,
+    flexShrink: 1,
+  },
+  categoryBadge: {
+    marginLeft: 6,
+    backgroundColor: '#F1F3F4',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  categoryBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#5F6368',
   },
   resultSubtitle: {
-    fontSize: 13,
-    color: '#70757a',
+    fontSize: 12,
+    color: '#70757A',
   },
   distanceBadge: {
-    backgroundColor: '#e8f0fe',
+    backgroundColor: '#E8F0FE',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
@@ -453,21 +396,39 @@ const styles = StyleSheet.create({
   distanceBadgeText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#1a73e8',
+    color: '#1A73E8',
   },
   divider: {
     height: 1,
-    backgroundColor: '#f1f3f4',
-    marginLeft: 58,
+    backgroundColor: '#F1F3F4',
+    marginLeft: 62,
   },
-  emptyContainer: {
+  statusContainer: {
+    flexDirection: 'row',
     padding: 16,
     alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: '#f1f3f4',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    marginTop: 8,
+    elevation: 4,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  statusText: {
+    fontSize: 14,
+    color: '#5F6368',
+    marginLeft: 8,
   },
   emptyText: {
     fontSize: 14,
-    color: '#70757a',
+    color: '#70757A',
+  },
+  errorText: {
+    fontSize: 13,
+    color: '#D93025',
+    fontWeight: '500',
   },
 });
