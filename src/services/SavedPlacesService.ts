@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SavedPlace } from '../types/places';
+import { logger } from '../utils/logger';
 
 const SAVED_PLACES_KEY = '@navigo_saved_places_v2';
 
@@ -25,6 +26,27 @@ export class SavedPlacesService {
   private inMemoryCache: Map<string, SavedPlace> = new Map();
   private isInitialized: boolean = false;
   private initializationPromise: Promise<void> | null = null;
+  private persistPromise: Promise<void> = Promise.resolve();
+
+  private isValidPlace(place: unknown): place is SavedPlace {
+    if (!place || typeof place !== 'object') return false;
+    const candidate = place as Partial<SavedPlace>;
+    return (
+      typeof candidate.id === 'string' &&
+      candidate.id.trim().length > 0 &&
+      typeof candidate.name === 'string' &&
+      candidate.name.trim().length > 0 &&
+      typeof candidate.address === 'string' &&
+      typeof candidate.latitude === 'number' &&
+      Number.isFinite(candidate.latitude) &&
+      candidate.latitude >= -90 &&
+      candidate.latitude <= 90 &&
+      typeof candidate.longitude === 'number' &&
+      Number.isFinite(candidate.longitude) &&
+      candidate.longitude >= -180 &&
+      candidate.longitude <= 180
+    );
+  }
 
   private async initializeIfNeeded(): Promise<void> {
     if (this.isInitialized) return;
@@ -37,27 +59,14 @@ export class SavedPlacesService {
           const parsed: unknown = JSON.parse(stored);
           if (Array.isArray(parsed)) {
             parsed.forEach(place => {
-              if (
-                place &&
-                typeof place === 'object' &&
-                'id' in place &&
-                typeof place.id === 'string' &&
-                'name' in place &&
-                typeof place.name === 'string' &&
-                'latitude' in place &&
-                typeof place.latitude === 'number' &&
-                Number.isFinite(place.latitude) &&
-                'longitude' in place &&
-                typeof place.longitude === 'number' &&
-                Number.isFinite(place.longitude)
-              ) {
-                this.inMemoryCache.set(place.id, place as SavedPlace);
+              if (this.isValidPlace(place)) {
+                this.inMemoryCache.set(place.id, place);
               }
             });
           }
         }
       } catch (e) {
-        console.warn('SavedPlacesService load error:', e);
+        logger.warn('SavedPlaces', 'Saved-place load failed.', e);
       } finally {
         this.isInitialized = true;
         this.initializationPromise = null;
@@ -69,11 +78,15 @@ export class SavedPlacesService {
 
   private async persist(): Promise<void> {
     const list = Array.from(this.inMemoryCache.values());
-    try {
-      await AsyncStorage.setItem(SAVED_PLACES_KEY, JSON.stringify(list));
-    } catch (e) {
-      console.warn('SavedPlacesService persist error:', e);
-    }
+    await AsyncStorage.setItem(SAVED_PLACES_KEY, JSON.stringify(list));
+  }
+
+  private queuePersist(): Promise<void> {
+    const operation = this.persistPromise.then(() => this.persist());
+    this.persistPromise = operation.catch(error => {
+      logger.warn('SavedPlaces', 'Saved-place persistence failed.', error);
+    });
+    return operation;
   }
 
   public async getSavedPlaces(): Promise<SavedPlace[]> {
@@ -92,12 +105,15 @@ export class SavedPlacesService {
 
   public async savePlace(place: SavedPlace): Promise<SavedPlace[]> {
     await this.initializeIfNeeded();
+    if (!this.isValidPlace(place)) {
+      throw new Error('A valid saved place is required.');
+    }
     const updated: SavedPlace = {
       ...place,
       createdAt: place.createdAt || new Date().toISOString(),
     };
     this.inMemoryCache.set(place.id, updated);
-    await this.persist();
+    await this.queuePersist();
     return Array.from(this.inMemoryCache.values());
   }
 
@@ -108,9 +124,12 @@ export class SavedPlacesService {
     await this.initializeIfNeeded();
     const existing = this.inMemoryCache.get(id);
     if (existing) {
-      const merged: SavedPlace = { ...existing, ...updatedFields };
+      const merged: SavedPlace = { ...existing, ...updatedFields, id };
+      if (!this.isValidPlace(merged)) {
+        throw new Error('Saved-place update contains invalid data.');
+      }
       this.inMemoryCache.set(id, merged);
-      await this.persist();
+      await this.queuePersist();
     }
     return Array.from(this.inMemoryCache.values());
   }
@@ -118,7 +137,7 @@ export class SavedPlacesService {
   public async deletePlace(id: string): Promise<SavedPlace[]> {
     await this.initializeIfNeeded();
     this.inMemoryCache.delete(id);
-    await this.persist();
+    await this.queuePersist();
     return Array.from(this.inMemoryCache.values());
   }
 }

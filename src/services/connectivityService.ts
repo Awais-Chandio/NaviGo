@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger';
+
 export type ConnectivityMode = 'auto' | 'online' | 'offline';
 
 export type NetworkType = 'wifi' | 'cellular' | 'none' | 'unknown';
@@ -23,7 +25,7 @@ class ConnectivityService {
     }
 
     if (this.mode === 'online') {
-      this.updateState(true, 'wifi');
+      this.updateState(true, 'unknown');
       return true;
     }
 
@@ -39,7 +41,7 @@ class ConnectivityService {
       clearTimeout(timeoutId);
 
       const reachable = !!(response && (response.status === 204 || response.ok));
-      this.updateState(reachable, reachable ? 'wifi' : 'none');
+      this.updateState(reachable, reachable ? 'unknown' : 'none');
       return reachable;
     } catch {
       this.updateState(false, 'none');
@@ -58,7 +60,7 @@ class ConnectivityService {
         try {
           listener(state);
         } catch (error) {
-          console.warn('[ConnectivityService] Listener error:', error);
+          logger.warn('Connectivity', 'Connectivity listener failed.', error);
         }
       });
     }
@@ -66,7 +68,9 @@ class ConnectivityService {
 
   public setMode(mode: ConnectivityMode) {
     this.mode = mode;
-    this.verifyConnection();
+    this.verifyConnection().catch(error => {
+      logger.warn('Connectivity', 'Connectivity verification failed.', error);
+    });
   }
 
   public getMode(): ConnectivityMode {

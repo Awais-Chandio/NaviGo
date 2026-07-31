@@ -51,7 +51,7 @@ export const AccuracyCircle: React.FC<AccuracyCircleProps> = ({
   accuracy,
 }) => {
   const circleGeoJSON = useMemo(() => {
-    if (!longitude || !latitude) return null;
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
     return createGeoJSONCircle(longitude, latitude, accuracy || 15);
   }, [longitude, latitude, accuracy]);
 

@@ -2,9 +2,16 @@ import { RouteDetails, OSRMStep, parseOSRMSteps } from '../services/routingServi
 import { formatDistance, formatDuration } from '../utils/locationUtils';
 import { offlineRoutingService } from '../services/OfflineRoutingService';
 import { logger } from '../utils/logger';
+import {
+  fetchWithTimeout,
+  isCallerAbort,
+  waitForRetry,
+} from '../utils/networkUtils';
 
 const TAG = 'RoutingRepository';
 const OSRM_TIMEOUT_MS = 12000;
+
+class NonRetryableRoutingHttpError extends Error {}
 
 async function fetchRouteWithRetry(
   url: string,
@@ -13,35 +20,36 @@ async function fetchRouteWithRetry(
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), OSRM_TIMEOUT_MS);
-    const abortFromCaller = () => controller.abort();
-    if (signal?.aborted) {
-      controller.abort();
-    } else {
-      signal?.addEventListener('abort', abortFromCaller, { once: true });
-    }
-
     try {
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
+        },
+        signal,
+        timeoutMs: OSRM_TIMEOUT_MS,
+      });
       if (response.ok) return response;
-      lastError = new Error(
+      const httpError = new Error(
         `Routing server unavailable (HTTP ${response.status})`,
       );
+      lastError = httpError;
       if (response.status < 500 && response.status !== 429) {
-        throw lastError;
+        throw new NonRetryableRoutingHttpError(httpError.message);
       }
     } catch (error) {
-      if (signal?.aborted) throw error;
+      if (
+        isCallerAbort(error, signal) ||
+        error instanceof NonRetryableRoutingHttpError
+      ) {
+        throw error;
+      }
       lastError = error;
-    } finally {
-      clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', abortFromCaller);
     }
 
     if (attempt === 1) {
       logger.info(TAG, 'OSRM request failed; retrying once.');
-      await new Promise<void>(resolve => setTimeout(resolve, 300));
+      await waitForRetry(300, signal);
     }
   }
 
@@ -106,6 +114,7 @@ export class OSRMPlanRoutingRepository implements IRoutingRepository {
     endLng: number,
     signal?: AbortSignal,
   ): Promise<RouteDetails[]> {
+    const startedAt = Date.now();
     try {
       const inputCoordinates = [startLat, startLng, endLat, endLng];
       if (
@@ -249,16 +258,13 @@ export class OSRMPlanRoutingRepository implements IRoutingRepository {
 
       return routeResults;
     } catch (error: unknown) {
-      if (
-        error &&
-        typeof error === 'object' &&
-        'name' in error &&
-        (error as { name: string }).name === 'AbortError'
-      ) {
-        return [];
+      if (isCallerAbort(error, signal)) {
+        throw error;
       }
       logger.warn(TAG, 'Online route request failed.', error);
       throw error;
+    } finally {
+      logger.performance(TAG, 'osrm.route', startedAt);
     }
   }
 }

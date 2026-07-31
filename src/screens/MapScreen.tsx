@@ -1,7 +1,19 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import { StyleSheet, StatusBar, TouchableOpacity } from 'react-native';
+import {
+  StyleSheet,
+  StatusBar,
+  TouchableOpacity,
+  AppState,
+  type NativeSyntheticEvent,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Map, Camera, ViewAnnotation, type CameraRef } from '@maplibre/maplibre-react-native';
+import {
+  Map,
+  Camera,
+  ViewAnnotation,
+  type CameraRef,
+  type ViewStateChangeEvent,
+} from '@maplibre/maplibre-react-native';
 import { useLocation } from '../hooks/useLocation';
 import { useNavigation } from '../hooks/useNavigation';
 import { useSavedPlaces } from '../hooks/useSavedPlaces';
@@ -26,8 +38,13 @@ import { savedPlacesService } from '../services/SavedPlacesService';
 import { NEARBY_CATEGORIES } from '../config/nearbyCategories';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { NearbyCategory, NearbyPlace, SavedPlace } from '../types/places';
-import { calculateBoundingBox, getHaversineDistance } from '../utils/locationUtils';
+import {
+  calculateBoundingBox,
+  getHaversineDistance,
+} from '../utils/locationUtils';
 import { logger } from '../utils/logger';
+import { connectivityService } from '../services/connectivityService';
+import { offlineMapManager } from '../services/offlineMapService';
 import PersonPinCircle from '../assets/icons/personPinCircle.svg';
 
 export default function MapScreen() {
@@ -39,15 +56,22 @@ export default function MapScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFollowingUser, setIsFollowingUser] = useState<boolean>(true);
   const [currentZoom, setCurrentZoom] = useState<number>(15);
-  const [isOfflineMapsVisible, setIsOfflineMapsVisible] = useState<boolean>(false);
+  const [mapStyleUrl, setMapStyleUrl] = useState<string>(
+    mapService.getActiveStyleUrl(),
+  );
+  const [isOfflineMapsVisible, setIsOfflineMapsVisible] =
+    useState<boolean>(false);
 
   // Nearby & Category search state
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [activeCategoryConfig, setActiveCategoryConfig] = useState<NearbyCategory | null>(null);
+  const [activeCategoryConfig, setActiveCategoryConfig] =
+    useState<NearbyCategory | null>(null);
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [isLoadingNearby, setIsLoadingNearby] = useState<boolean>(false);
   const [nearbyError, setNearbyError] = useState<string | null>(null);
-  const [selectedNearbyPlaceId, setSelectedNearbyPlaceId] = useState<string | null>(null);
+  const [selectedNearbyPlaceId, setSelectedNearbyPlaceId] = useState<
+    string | null
+  >(null);
 
   const {
     navigationState,
@@ -59,7 +83,7 @@ export default function MapScreen() {
     isRerouting,
     currentStep,
     distanceToStep,
-    remainingDuration,
+    eta,
     formattedRemainingDistance,
     formattedRemainingDuration,
     currentBearing,
@@ -67,10 +91,12 @@ export default function MapScreen() {
     currentRoad,
     matchedLocation,
     nextInstruction,
+    isMuted,
     selectDestination,
     selectRouteIndex,
     startNavigation,
     cancelNavigation,
+    toggleVoiceMute,
     handleLocationUpdate,
   } = useNavigation();
 
@@ -78,9 +104,39 @@ export default function MapScreen() {
   const { location, detectedArea, locationError } = useLocation(isNavigating);
   const hasValidLocationFix =
     location.accuracy > 0 &&
-    location.accuracy <=
-      LOCATION_CONFIG.GPS_ACCURACY_MAX_THRESHOLD_METERS;
+    location.accuracy <= LOCATION_CONFIG.GPS_ACCURACY_MAX_THRESHOLD_METERS;
   const { recentSearches, savedPlaces, addRecentSearch } = useSavedPlaces();
+
+  useEffect(() => {
+    offlineMapManager.initialize().catch(error => {
+      logger.warn(
+        'OfflineMaps',
+        'Offline map metadata initialization failed.',
+        error,
+      );
+    });
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = connectivityService.subscribe(() => {
+      setMapStyleUrl(mapService.getActiveStyleUrl());
+    });
+    const verify = () => {
+      connectivityService.verifyConnection().catch(error => {
+        logger.warn('Connectivity', 'Reachability check failed.', error);
+      });
+    };
+    verify();
+    const subscription = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        verify();
+      }
+    });
+    return () => {
+      subscription.remove();
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (locationError) {
@@ -89,73 +145,72 @@ export default function MapScreen() {
   }, [locationError]);
 
   // Dynamic location update ref for active category search
-  const lastFetchedLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
+  const lastFetchedLocationRef = useRef<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
   const nearbyAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (
+    const canSearch =
       selectedCategory &&
       activeCategoryConfig &&
       !activeCategoryConfig.isSavedPlace &&
-      hasValidLocationFix
-    ) {
-      if (lastFetchedLocationRef.current) {
-        const distMoved = getHaversineDistance(
-          lastFetchedLocationRef.current.latitude,
-          lastFetchedLocationRef.current.longitude,
-          location.latitude,
-          location.longitude,
-        );
-        if (distMoved < LOCATION_CONFIG.NEARBY_REQUERY_THRESHOLD_METERS) return;
-      }
-
-      lastFetchedLocationRef.current = {
-        latitude: location.latitude,
-        longitude: location.longitude,
-      };
-
+      hasValidLocationFix;
+    if (!canSearch) {
       nearbyAbortRef.current?.abort();
-      const controller = new AbortController();
-      nearbyAbortRef.current = controller;
-      setIsLoadingNearby(true);
-      setNearbyError(null);
-      nearbyPlacesService
-        .searchNearby({
+      nearbyAbortRef.current = null;
+      setIsLoadingNearby(false);
+      return;
+    }
+
+    if (lastFetchedLocationRef.current) {
+      const distMoved = getHaversineDistance(
+        lastFetchedLocationRef.current.latitude,
+        lastFetchedLocationRef.current.longitude,
+        location.latitude,
+        location.longitude,
+      );
+      if (distMoved < LOCATION_CONFIG.NEARBY_REQUERY_THRESHOLD_METERS) return;
+    }
+
+    lastFetchedLocationRef.current = {
+      latitude: location.latitude,
+      longitude: location.longitude,
+    };
+
+    nearbyAbortRef.current?.abort();
+    const controller = new AbortController();
+    nearbyAbortRef.current = controller;
+    setIsLoadingNearby(true);
+    setNearbyError(null);
+    nearbyPlacesService
+      .searchNearby(
+        {
           latitude: location.latitude,
           longitude: location.longitude,
           category: activeCategoryConfig.category,
           radius: LOCATION_CONFIG.DEFAULT_NEARBY_SEARCH_RADIUS_KM,
-        }, controller.signal)
-        .then(results => {
-          if (!controller.signal.aborted) {
-            setNearbyPlaces(results);
-          }
-        })
-        .catch(err => {
-          if (
-            !controller.signal.aborted &&
-            (!err ||
-              typeof err !== 'object' ||
-              !('name' in err) ||
-              (err as { name: string }).name !== 'AbortError')
-          ) {
-            logger.warn('MapScreen', 'Dynamic nearby search update error:', err);
-            setNearbyError('Unable to load nearby places right now.');
-          }
-        })
-        .finally(() => {
-          if (
-            !controller.signal.aborted &&
-            nearbyAbortRef.current === controller
-          ) {
-            setIsLoadingNearby(false);
-            nearbyAbortRef.current = null;
-          }
-        });
-    }
-    return () => {
-      nearbyAbortRef.current?.abort();
-    };
+        },
+        controller.signal,
+      )
+      .then(results => {
+        if (!controller.signal.aborted) {
+          setNearbyPlaces(results);
+        }
+      })
+      .catch(err => {
+        if (!controller.signal.aborted) {
+          logger.warn('MapScreen', 'Dynamic nearby search update error:', err);
+          setNearbyError('Unable to load nearby places right now.');
+        }
+      })
+      .finally(() => {
+        if (nearbyAbortRef.current === controller) {
+          setIsLoadingNearby(false);
+          nearbyAbortRef.current = null;
+        }
+      });
   }, [
     activeCategoryConfig,
     hasValidLocationFix,
@@ -163,6 +218,14 @@ export default function MapScreen() {
     location.longitude,
     selectedCategory,
   ]);
+
+  useEffect(
+    () => () => {
+      nearbyAbortRef.current?.abort();
+      nearbyAbortRef.current = null;
+    },
+    [],
+  );
 
   // Determine displayed marker location (map matched or raw GPS)
   const markerLat =
@@ -176,7 +239,7 @@ export default function MapScreen() {
       : location.longitude;
 
   useEffect(() => {
-    if (location.latitude && location.longitude) {
+    if (hasValidLocationFix) {
       handleLocationUpdate(
         location.latitude,
         location.longitude,
@@ -184,9 +247,12 @@ export default function MapScreen() {
         location.accuracy,
         location.speed,
         location.timestamp,
-      );
+      ).catch(error => {
+        logger.error('NavigationEngine', 'Location update failed.', error);
+      });
     }
   }, [
+    hasValidLocationFix,
     handleLocationUpdate,
     location.accuracy,
     location.heading,
@@ -215,14 +281,21 @@ export default function MapScreen() {
     [],
   );
 
-  const lastCameraPosRef = useRef<{ lat: number; lng: number; bearing: number } | null>(null);
+  const lastCameraPosRef = useRef<{
+    lat: number;
+    lng: number;
+    bearing: number;
+  } | null>(null);
   const lastCameraUpdateTsRef = useRef<number>(0);
 
   useEffect(() => {
-    if (isFollowingUser && cameraRef.current && location.latitude && location.longitude) {
-      const targetLat = navigationState === 'navigating' ? markerLat : location.latitude;
-      const targetLng = navigationState === 'navigating' ? markerLng : location.longitude;
-      const targetBearing = navigationState === 'navigating' ? currentBearing : 0;
+    if (isFollowingUser && cameraRef.current && hasValidLocationFix) {
+      const targetLat =
+        navigationState === 'navigating' ? markerLat : location.latitude;
+      const targetLng =
+        navigationState === 'navigating' ? markerLng : location.longitude;
+      const targetBearing =
+        navigationState === 'navigating' ? currentBearing : 0;
       const now = Date.now();
 
       // Cooldown & distance guard to prevent camera animation cancellations & tile thrashing
@@ -242,14 +315,17 @@ export default function MapScreen() {
         if (
           distMoved < 2 &&
           bearingDiff < 5 &&
-          timeSinceLastUpdate <
-            LOCATION_CONFIG.NAVIGATION_CAMERA_THROTTLE_MS
+          timeSinceLastUpdate < LOCATION_CONFIG.NAVIGATION_CAMERA_THROTTLE_MS
         ) {
           return;
         }
       }
 
-      lastCameraPosRef.current = { lat: targetLat, lng: targetLng, bearing: targetBearing };
+      lastCameraPosRef.current = {
+        lat: targetLat,
+        lng: targetLng,
+        bearing: targetBearing,
+      };
       lastCameraUpdateTsRef.current = now;
 
       if (navigationState === 'navigating') {
@@ -297,6 +373,7 @@ export default function MapScreen() {
   }, [
     currentBearing,
     destination,
+    hasValidLocationFix,
     isFollowingUser,
     location.latitude,
     location.longitude,
@@ -304,8 +381,6 @@ export default function MapScreen() {
     markerLng,
     navigationState,
   ]);
-
-
 
   useEffect(() => {
     if (
@@ -337,10 +412,22 @@ export default function MapScreen() {
     }
   }, [isFollowingUser, navigationState]);
 
+  const handleRegionDidChange = useCallback(
+    (event: NativeSyntheticEvent<ViewStateChangeEvent>) => {
+      const nextZoom = event.nativeEvent.zoom;
+      if (Number.isFinite(nextZoom)) {
+        setCurrentZoom(nextZoom);
+      }
+    },
+    [],
+  );
+
   const handleSelectPlace = useCallback(
     (item: SearchPlaceItem) => {
       if (!hasValidLocationFix) {
-        setErrorMessage('Wait for an accurate GPS fix before requesting a route.');
+        setErrorMessage(
+          'Wait for an accurate GPS fix before requesting a route.',
+        );
         return;
       }
       addRecentSearch(item);
@@ -363,7 +450,9 @@ export default function MapScreen() {
   const handleSelectSavedPlace = useCallback(
     (saved: SavedPlace) => {
       if (!hasValidLocationFix) {
-        setErrorMessage('Wait for an accurate GPS fix before requesting a route.');
+        setErrorMessage(
+          'Wait for an accurate GPS fix before requesting a route.',
+        );
         return;
       }
       selectDestination(location.latitude, location.longitude, {
@@ -384,6 +473,9 @@ export default function MapScreen() {
   const handleCategoryPress = useCallback(
     async (category: NearbyCategory) => {
       if (selectedCategory === category.id) {
+        nearbyAbortRef.current?.abort();
+        nearbyAbortRef.current = null;
+        setIsLoadingNearby(false);
         setSelectedCategory(null);
         setActiveCategoryConfig(null);
         setNearbyPlaces([]);
@@ -400,7 +492,9 @@ export default function MapScreen() {
 
       if (category.isSavedPlace && category.savedType) {
         setNearbyPlaces([]);
-        const savedPlace = await savedPlacesService.getPlaceByType(category.savedType);
+        const savedPlace = await savedPlacesService.getPlaceByType(
+          category.savedType,
+        );
         if (savedPlace) {
           if (!hasValidLocationFix) {
             setErrorMessage(
@@ -425,7 +519,9 @@ export default function MapScreen() {
           setIsFollowingUser(false);
         } else {
           setErrorMessage(
-            `${category.title} is not set. Save a ${category.title.toLowerCase()} location first.`,
+            `${
+              category.title
+            } is not set. Save a ${category.title.toLowerCase()} location first.`,
           );
         }
       } else {
@@ -460,7 +556,9 @@ export default function MapScreen() {
   const handleNavigateToNearbyPlace = useCallback(
     (place: NearbyPlace) => {
       if (!hasValidLocationFix) {
-        setErrorMessage('Wait for an accurate GPS fix before requesting a route.');
+        setErrorMessage(
+          'Wait for an accurate GPS fix before requesting a route.',
+        );
         return;
       }
       selectDestination(location.latitude, location.longitude, {
@@ -492,6 +590,7 @@ export default function MapScreen() {
     setNearbyPlaces([]);
     setSelectedNearbyPlaceId(null);
     setNearbyError(null);
+    setIsLoadingNearby(false);
     nearbyAbortRef.current?.abort();
     nearbyAbortRef.current = null;
   }, []);
@@ -509,6 +608,7 @@ export default function MapScreen() {
   }, [currentZoom, location.latitude, location.longitude]);
 
   const handleRecenter = useCallback(() => {
+    if (!hasValidLocationFix) return;
     if (followResumeTimerRef.current) {
       clearTimeout(followResumeTimerRef.current);
       followResumeTimerRef.current = null;
@@ -525,6 +625,7 @@ export default function MapScreen() {
     }
   }, [
     currentBearing,
+    hasValidLocationFix,
     location.latitude,
     location.longitude,
     navigationState,
@@ -593,8 +694,9 @@ export default function MapScreen() {
 
       <Map
         style={styles.map}
-        mapStyle={mapService.getActiveStyleUrl()}
+        mapStyle={mapStyleUrl}
         onTouchStart={handleMapTouch}
+        onRegionDidChange={handleRegionDidChange}
       >
         {hasValidLocationFix && (
           <AccuracyCircle
@@ -609,7 +711,10 @@ export default function MapScreen() {
             <RouteLine coordinates={routeDetails.coordinates} />
             <TrafficLine
               coordinates={routeDetails.coordinates}
-              visible={navigationState === 'navigating' || navigationState === 'route_ready'}
+              visible={
+                navigationState === 'navigating' ||
+                navigationState === 'route_ready'
+              }
             />
           </>
         )}
@@ -652,7 +757,9 @@ export default function MapScreen() {
               <PersonPinCircle
                 width={selectedNearbyPlaceId === place.id ? 40 : 32}
                 height={selectedNearbyPlaceId === place.id ? 40 : 32}
-                fill={selectedNearbyPlaceId === place.id ? '#1A73E8' : '#EA4335'}
+                fill={
+                  selectedNearbyPlaceId === place.id ? '#1A73E8' : '#EA4335'
+                }
                 stroke="#FFFFFF"
                 strokeWidth={1.5}
               />
@@ -664,6 +771,7 @@ export default function MapScreen() {
       <MapControls
         bearing={currentBearing}
         hasDestination={destination !== null}
+        hasLocationFix={hasValidLocationFix}
         isFollowingUser={isFollowingUser}
         onResetCompass={handleResetCompass}
         onRecenter={handleRecenter}
@@ -687,16 +795,18 @@ export default function MapScreen() {
         />
       )}
 
-      {navigationState === 'route_ready' && destination && routes.length > 0 && (
-        <RouteAlternativesCard
-          routes={routes}
-          selectedIndex={selectedRouteIndex}
-          destinationTitle={destination.title}
-          onSelectRouteIndex={selectRouteIndex}
-          onStartNavigation={startNavigation}
-          onCancel={cancelNavigation}
-        />
-      )}
+      {navigationState === 'route_ready' &&
+        destination &&
+        routes.length > 0 && (
+          <RouteAlternativesCard
+            routes={routes}
+            selectedIndex={selectedRouteIndex}
+            destinationTitle={destination.title}
+            onSelectRouteIndex={selectRouteIndex}
+            onStartNavigation={startNavigation}
+            onCancel={cancelNavigation}
+          />
+        )}
 
       {navigationState === 'navigating' && (
         <NavigationCard
@@ -706,15 +816,16 @@ export default function MapScreen() {
           isRerouting={isRerouting}
           formattedDistance={formattedRemainingDistance}
           formattedDuration={formattedRemainingDuration}
-          remainingDurationSeconds={remainingDuration}
+          eta={eta}
           currentSpeed={currentSpeed}
           currentRoad={currentRoad}
           nextInstruction={nextInstruction}
+          isMuted={isMuted}
+          onToggleVoiceMute={toggleVoiceMute}
           onStartNavigation={startNavigation}
           onCancelNavigation={cancelNavigation}
         />
       )}
-
 
       <OfflineMapsScreen
         visible={isOfflineMapsVisible}
@@ -726,6 +837,7 @@ export default function MapScreen() {
               }
             : undefined
         }
+        suggestedRegionName={detectedArea}
         onClose={() => setIsOfflineMapsVisible(false)}
       />
     </SafeAreaView>

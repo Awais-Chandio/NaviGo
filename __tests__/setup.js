@@ -1,10 +1,13 @@
 jest.mock('@maplibre/maplibre-react-native', () => {
   const React = require('react');
   return {
-    Map: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    Map: ({ children }: any) =>
+      React.createElement(React.Fragment, null, children),
     Camera: React.forwardRef(() => null),
-    ViewAnnotation: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    GeoJSONSource: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    ViewAnnotation: ({ children }: any) =>
+      React.createElement(React.Fragment, null, children),
+    GeoJSONSource: ({ children }: any) =>
+      React.createElement(React.Fragment, null, children),
     Layer: () => null,
     OfflineManager: {
       setTileCountLimit: jest.fn(),
@@ -28,17 +31,53 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 jest.mock('react-native-geolocation-service', () => ({
-  getCurrentPosition: jest.fn(cb => cb({ coords: { latitude: 25.396, longitude: 68.3578, accuracy: 10, heading: 0, speed: 0 } })),
+  getCurrentPosition: jest.fn(cb =>
+    cb({
+      coords: {
+        latitude: 25.396,
+        longitude: 68.3578,
+        accuracy: 10,
+        heading: 0,
+        speed: 0,
+      },
+    }),
+  ),
   watchPosition: jest.fn(),
   clearWatch: jest.fn(),
 }));
 
+jest.mock('react-native-tts', () => ({
+  __esModule: true,
+  default: {
+    getInitStatus: jest.fn(() => Promise.resolve('success')),
+    setDucking: jest.fn(() => Promise.resolve('success')),
+    setDefaultLanguage: jest.fn(() => Promise.resolve('success')),
+    speak: jest.fn(() => 'utterance-id'),
+    stop: jest.fn(() => Promise.resolve(true)),
+  },
+}));
+
 jest.mock('react-native-permissions', () => ({
   PERMISSIONS: {
-    ANDROID: { ACCESS_FINE_LOCATION: 'android.permission.ACCESS_FINE_LOCATION' },
+    ANDROID: {
+      ACCESS_FINE_LOCATION: 'android.permission.ACCESS_FINE_LOCATION',
+      ACCESS_COARSE_LOCATION: 'android.permission.ACCESS_COARSE_LOCATION',
+    },
     IOS: { LOCATION_WHEN_IN_USE: 'ios.permission.LOCATION_WHEN_IN_USE' },
   },
   RESULTS: { GRANTED: 'granted' },
   check: jest.fn(() => Promise.resolve('granted')),
+  checkMultiple: jest.fn(() =>
+    Promise.resolve({
+      'android.permission.ACCESS_FINE_LOCATION': 'granted',
+      'android.permission.ACCESS_COARSE_LOCATION': 'granted',
+    }),
+  ),
   request: jest.fn(() => Promise.resolve('granted')),
+  requestMultiple: jest.fn(() =>
+    Promise.resolve({
+      'android.permission.ACCESS_FINE_LOCATION': 'granted',
+      'android.permission.ACCESS_COARSE_LOCATION': 'granted',
+    }),
+  ),
 }));

@@ -1,6 +1,7 @@
-import { SearchResult } from '../services/SearchService';
+import { SearchResult } from '../services/searchService';
 import { RouteDetails, NavigationStep } from '../services/routingService';
 import { MatchedLocation } from '../services/MapMatchingService';
+import { logger } from '../utils/logger';
 
 export type NavigationModeState =
   | 'idle'
@@ -59,7 +60,19 @@ class NavigationStore {
   private listeners: Set<Listener> = new Set();
 
   public getState(): NavigationStoreData {
-    return { ...this.state };
+    return {
+      ...this.state,
+      destination: this.state.destination
+        ? { ...this.state.destination }
+        : null,
+      routes: [...this.state.routes],
+      currentStep: this.state.currentStep
+        ? { ...this.state.currentStep }
+        : null,
+      matchedLocation: this.state.matchedLocation
+        ? { ...this.state.matchedLocation }
+        : null,
+    };
   }
 
   public subscribe(listener: Listener): () => void {
@@ -71,7 +84,13 @@ class NavigationStore {
 
   private notify() {
     const copy = this.getState();
-    this.listeners.forEach(listener => listener(copy));
+    this.listeners.forEach(listener => {
+      try {
+        listener(copy);
+      } catch (error) {
+        logger.warn('NavigationStore', 'State listener failed.', error);
+      }
+    });
   }
 
   public setNavigationState(mode: NavigationModeState) {

@@ -1,7 +1,7 @@
 {
   "extends": "@react-native/typescript-config",
   "compilerOptions": {
-    "lib": ["es2017"],
+    "lib": ["es2018"],
     "types": ["jest"]
   },
   "include": ["**/*.ts", "**/*.tsx"],

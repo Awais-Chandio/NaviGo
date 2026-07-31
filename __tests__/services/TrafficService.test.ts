@@ -8,14 +8,10 @@ describe('TrafficService', () => {
     [68.3630, 25.4010],
   ];
 
-  it('generates traffic flow segments for route coordinates', async () => {
+  it('does not display fabricated traffic by default', async () => {
     const segments = await trafficService.fetchTrafficSegments(mockRouteCoordinates);
 
-    expect(segments.length).toBe(mockRouteCoordinates.length - 1);
-    expect(segments[0].color).toBeDefined();
-    expect(segments[0].speed).toBeDefined();
-    expect(segments[0].start).toEqual(mockRouteCoordinates[0]);
-    expect(segments[0].end).toEqual(mockRouteCoordinates[1]);
+    expect(segments).toEqual([]);
   });
 
   it('allows setting custom traffic providers', async () => {

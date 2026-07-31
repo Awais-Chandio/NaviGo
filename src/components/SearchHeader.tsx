@@ -96,6 +96,8 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  const userLatitude = userLocation.latitude;
+  const userLongitude = userLocation.longitude;
 
   useEffect(() => {
     return () => {
@@ -121,8 +123,8 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
     try {
       const locationToUse =
-        userLocation?.latitude && userLocation?.longitude
-          ? userLocation
+        Number.isFinite(userLatitude) && Number.isFinite(userLongitude)
+          ? { latitude: userLatitude, longitude: userLongitude }
           : { latitude: 25.396, longitude: 68.3578 };
 
       const results = await geocodingService.searchPlaces(text, {
@@ -159,7 +161,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         searchAbortRef.current = null;
       }
     }
-  }, [userLocation]);
+  }, [userLatitude, userLongitude]);
 
   const handleTextChange = useCallback((text: string) => {
     setSearchText(text);
@@ -209,8 +211,8 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const getItemLayout = useCallback(
     (_data: unknown, index: number) => ({
-      length: 64,
-      offset: 64 * index,
+      length: 65,
+      offset: 65 * index,
       index,
     }),
     [],

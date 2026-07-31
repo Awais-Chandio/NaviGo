@@ -17,44 +17,54 @@ describe('NearbyPlacesService', () => {
     expect(resultsNaN).toEqual([]);
   });
 
-  it('correctly parses Nominatim and Overpass way/relation center elements for Hospital and Parking', async () => {
+  it('correctly parses Overpass way/relation center elements for Hospital and Parking', async () => {
     const mockUserLat = 25.396;
     const mockUserLon = 68.3578;
 
     const hospitalCenter = { lat: 25.399, lon: 68.361 };
     const parkingCenter = { lat: 25.397, lon: 68.359 };
 
-    const mockNominatimHospital = [
-      {
-        place_id: '101',
-        name: 'City Hospital & Medical Center',
-        display_name: 'City Hospital & Medical Center, Main Rd',
-        lat: String(hospitalCenter.lat),
-        lon: String(hospitalCenter.lon),
-      },
-    ];
+    const mockOverpassHospital = {
+      elements: [
+        {
+          type: 'way',
+          id: 101,
+          center: hospitalCenter,
+          tags: {
+            name: 'City Hospital & Medical Center',
+            amenity: 'hospital',
+            'addr:street': 'Main Rd',
+          },
+        },
+      ],
+    };
 
-    const mockNominatimParking = [
-      {
-        place_id: '102',
-        name: 'Central Car Parking',
-        display_name: 'Central Car Parking, Plaza St',
-        lat: String(parkingCenter.lat),
-        lon: String(parkingCenter.lon),
-      },
-    ];
+    const mockOverpassParking = {
+      elements: [
+        {
+          type: 'relation',
+          id: 102,
+          center: parkingCenter,
+          tags: {
+            name: 'Central Car Parking',
+            amenity: 'parking',
+            'addr:street': 'Plaza St',
+          },
+        },
+      ],
+    };
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = jest.fn().mockImplementation((url: string) => {
       if (url.includes('hospital')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve(mockNominatimHospital),
+          json: () => Promise.resolve(mockOverpassHospital),
         } as unknown as Response);
       }
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve(mockNominatimParking),
+        json: () => Promise.resolve(mockOverpassParking),
       } as unknown as Response);
     });
 
@@ -94,22 +104,24 @@ describe('NearbyPlacesService', () => {
     const closeLat = 25.398;
     const closeLon = 68.360;
 
-    const mockData = [
-      {
-        place_id: '1',
-        name: 'Close Restaurant',
-        display_name: 'Close Restaurant, Market St',
-        lat: String(closeLat),
-        lon: String(closeLon),
-      },
-      {
-        place_id: '2',
-        name: 'Far Away Restaurant',
-        display_name: 'Far Away Restaurant, Far City',
-        lat: String(farLat),
-        lon: String(farLon),
-      },
-    ];
+    const mockData = {
+      elements: [
+        {
+          type: 'node',
+          id: 1,
+          lat: closeLat,
+          lon: closeLon,
+          tags: { name: 'Close Restaurant', amenity: 'restaurant' },
+        },
+        {
+          type: 'node',
+          id: 2,
+          lat: farLat,
+          lon: farLon,
+          tags: { name: 'Far Away Restaurant', amenity: 'restaurant' },
+        },
+      ],
+    };
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = jest.fn().mockResolvedValue({

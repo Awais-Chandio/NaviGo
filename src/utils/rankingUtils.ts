@@ -108,30 +108,51 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
   let distanceScore = 0;
   let distanceMeters: number | undefined;
 
-  // 1. Distance score: max 100 points at 0m, decaying to 0 at maxRadiusMeters
-  if (userLocation?.latitude && userLocation?.longitude) {
+  // 1. Current-location proximity is the primary geographic signal. Use a
+  // smooth decay so a result just outside an arbitrary radius is not treated
+  // the same as one hundreds of kilometres away.
+  if (
+    Number.isFinite(userLocation?.latitude) &&
+    Number.isFinite(userLocation?.longitude)
+  ) {
     distanceMeters = getHaversineDistance(
-      userLocation.latitude,
-      userLocation.longitude,
+      userLocation!.latitude,
+      userLocation!.longitude,
       latitude,
       longitude,
     );
-    distanceScore = Math.max(0, 100 * (1 - distanceMeters / Math.max(maxRadiusMeters, 1)));
+    const proximityScaleMeters = Math.max(maxRadiusMeters, 25000);
+    distanceScore =
+      500 * Math.exp(-distanceMeters / proximityScaleMeters);
   }
 
-  // 2. Hyderabad Proximity Boost: Boost places in Hyderabad region (< 35km of 25.3960, 68.3578)
+  // 2. Hyderabad remains a regional preference only when the current search
+  // context is also near Hyderabad (or no current fix is available).
   let hyderabadBonus = 0;
   const hyderabadDistMeters = getHaversineDistance(25.3960, 68.3578, latitude, longitude);
-  if (hyderabadDistMeters < 35000) {
-    hyderabadBonus = 500;
+  const userDistanceToHyderabad = userLocation
+    ? getHaversineDistance(
+        userLocation.latitude,
+        userLocation.longitude,
+        25.396,
+        68.3578,
+      )
+    : 0;
+  const prioritizeHyderabad =
+    !userLocation || userDistanceToHyderabad < 75000;
+  if (prioritizeHyderabad && hyderabadDistMeters < 35000) {
+    hyderabadBonus = 120;
   }
 
   // 3. Priority Areas Match Bonus in Hyderabad
   let areaBonus = 0;
   const fullTextLower = `${title} ${subtitle || ''} ${JSON.stringify(address || {})} ${JSON.stringify(tags || {})}`.toLowerCase();
   const priorityAreas = ['qasimabad', 'latifabad', 'autobahn', 'hala naka', 'saddar', 'hirabad'];
-  if (priorityAreas.some(area => fullTextLower.includes(area))) {
-    areaBonus = 250;
+  if (
+    prioritizeHyderabad &&
+    priorityAreas.some(area => fullTextLower.includes(area))
+  ) {
+    areaBonus = 75;
   }
 
   // 4. Metadata Completeness Bonus

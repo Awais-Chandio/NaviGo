@@ -3,6 +3,7 @@ import {
   type SearchPlaceItem,
   type SearchOptions,
 } from './searchService';
+import { logger } from '../utils/logger';
 
 export interface SearchProvider {
   name: string;
@@ -38,7 +39,9 @@ class GeocodingService {
 
   public setProvider(provider: SearchProvider) {
     this.activeProvider = provider;
-    console.log(`[GeocodingService]: Switched provider to ${provider.name}`);
+    logger.info('Search', 'Geocoding provider changed.', {
+      provider: provider.name,
+    });
   }
 
   public getActiveProviderName(): string {

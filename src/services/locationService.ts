@@ -2,6 +2,9 @@ import Geolocation, { GeoPosition } from 'react-native-geolocation-service';
 import { RequestLocationPermission } from '../permissions/locationPermission';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { isGPSJump } from '../utils/locationUtils';
+import { logger } from '../utils/logger';
+
+const TAG = 'GPS';
 
 export interface LocationData {
   latitude: number;
@@ -30,10 +33,9 @@ export async function getCurrentLocationFix(): Promise<LocationData | null> {
     Geolocation.getCurrentPosition(
       position => {
         if (!isLocationAccurate(position)) {
-          console.warn(
-            '[LocationService] Ignored inaccurate current GPS fix:',
-            position.coords.accuracy,
-          );
+          logger.warn(TAG, 'Ignored inaccurate current GPS fix.', {
+            accuracyMeters: position.coords.accuracy,
+          });
           resolve(null);
           return;
         }
@@ -47,7 +49,10 @@ export async function getCurrentLocationFix(): Promise<LocationData | null> {
         });
       },
       error => {
-        console.warn('getCurrentLocationFix Error:', error.message);
+        logger.warn(TAG, 'Current location request failed.', {
+          code: error.code,
+          message: error.message,
+        });
         resolve(null);
       },
       {
@@ -161,12 +166,20 @@ export function watchLocationUpdates(
           );
 
           if (isJump) {
-            console.warn('[LocationService] Rejected sudden GPS jump outlier fix:', newLoc);
+            logger.warn(TAG, 'Rejected implausible GPS jump.', {
+              accuracyMeters: newLoc.accuracy,
+              timestamp: newLoc.timestamp,
+            });
             return;
           }
         }
 
         lastEmittedLocation = newLoc;
+        logger.debug(TAG, 'Accepted location update.', {
+          accuracyMeters: newLoc.accuracy,
+          hasHeading: typeof newLoc.heading === 'number',
+          hasSpeed: typeof newLoc.speed === 'number',
+        });
         onLocation(newLoc);
       },
       error => {

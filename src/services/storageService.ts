@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SearchPlaceItem } from './searchService';
 import { SavedPlace } from '../types/places';
 import { savedPlacesService } from './SavedPlacesService';
+import { logger } from '../utils/logger';
 
 export type { SavedPlace };
 
@@ -24,24 +25,14 @@ class StorageService {
       if (storedSearches) {
         const parsed: unknown = JSON.parse(storedSearches);
         if (Array.isArray(parsed)) {
-          this.recentSearches = parsed.filter(
-            (item): item is SearchPlaceItem =>
-              !!item &&
-              typeof item === 'object' &&
-              'id' in item &&
-              'title' in item &&
-              typeof item.title === 'string' &&
-              'latitude' in item &&
-              typeof item.latitude === 'number' &&
-              Number.isFinite(item.latitude) &&
-              'longitude' in item &&
-              typeof item.longitude === 'number' &&
-              Number.isFinite(item.longitude),
-          );
+          this.recentSearches = parsed
+            .map(item => this.sanitizeRecentSearch(item))
+            .filter((item): item is SearchPlaceItem => item !== null)
+            .slice(0, 10);
         }
       }
     } catch (e) {
-      console.warn('StorageService load error:', e);
+      logger.warn('Storage', 'Recent-search load failed.', e);
     }
   }
 
@@ -53,8 +44,46 @@ class StorageService {
         JSON.stringify(this.recentSearches),
       );
     } catch (e) {
-      console.warn('Persist searches error:', e);
+      logger.warn('Storage', 'Recent-search persistence failed.', e);
     }
+  }
+
+  private sanitizeRecentSearch(item: unknown): SearchPlaceItem | null {
+    if (!item || typeof item !== 'object') return null;
+    const candidate = item as Partial<SearchPlaceItem>;
+    if (
+      (typeof candidate.id !== 'string' &&
+        typeof candidate.id !== 'number') ||
+      typeof candidate.title !== 'string' ||
+      !candidate.title.trim() ||
+      typeof candidate.latitude !== 'number' ||
+      !Number.isFinite(candidate.latitude) ||
+      candidate.latitude < -90 ||
+      candidate.latitude > 90 ||
+      typeof candidate.longitude !== 'number' ||
+      !Number.isFinite(candidate.longitude) ||
+      candidate.longitude < -180 ||
+      candidate.longitude > 180
+    ) {
+      return null;
+    }
+
+    return {
+      id: candidate.id,
+      title: candidate.title,
+      subtitle:
+        typeof candidate.subtitle === 'string' ? candidate.subtitle : '',
+      latitude: candidate.latitude,
+      longitude: candidate.longitude,
+      displayName:
+        typeof candidate.displayName === 'string'
+          ? candidate.displayName
+          : candidate.title,
+      distanceMeters: candidate.distanceMeters,
+      formattedDistance: candidate.formattedDistance,
+      categoryIcon: candidate.categoryIcon,
+      categoryName: candidate.categoryName,
+    };
   }
 
   public async initialize(): Promise<void> {
@@ -65,15 +94,20 @@ class StorageService {
     this.persistPromise = this.persistPromise
       .then(() => this.persistSearches())
       .catch(error => {
-        console.warn('Persist searches queue error:', error);
+        logger.warn('Storage', 'Recent-search persistence queue failed.', error);
       });
   }
 
   public addRecentSearch(item: SearchPlaceItem): SearchPlaceItem[] {
+    const sanitizedItem = this.sanitizeRecentSearch(item);
+    if (!sanitizedItem) {
+      logger.warn('Storage', 'Rejected invalid recent-search item.');
+      return [...this.recentSearches];
+    }
     this.recentSearches = this.recentSearches.filter(
-      r => r.id.toString() !== item.id.toString(),
+      r => r.id.toString() !== sanitizedItem.id.toString(),
     );
-    this.recentSearches.unshift(item);
+    this.recentSearches.unshift(sanitizedItem);
     if (this.recentSearches.length > 10) {
       this.recentSearches.pop();
     }

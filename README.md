@@ -1,97 +1,95 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# NaviGo
 
-# Getting Started
+NaviGo is a React Native CLI and TypeScript navigation application using
+MapLibre, OpenFreeMap/OpenStreetMap data, Photon search, Overpass nearby
+queries, OSRM driving routes, GPS tracking, and MapLibre offline tile packs.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+## Architecture
 
-## Step 1: Start Metro
+- `src/screens`: screen composition and map UI
+- `src/hooks`: location, navigation, and saved-place orchestration
+- `src/services`: domain state, persistence, GPS, navigation, and offline packs
+- `src/repositories`: Photon, Overpass, and OSRM transport/parsing
+- `src/utils`: geodesic, route-progress, ranking, logging, and network helpers
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+The app currently uses foreground location only. Downloaded MapLibre regions
+provide offline rendering for their exact style and zoom range. Offline search
+and offline road-graph routing are not installed; the app deliberately refuses
+to fabricate straight-line driving routes.
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+## Setup
+
+Requirements:
+
+- Node.js 22.11 or newer
+- Android SDK/API 36 and a compatible JDK
+- Xcode and CocoaPods for iOS
+
+Install JavaScript dependencies:
 
 ```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
+npm ci
 ```
 
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+Install iOS pods after dependency or Podfile changes:
 
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
-```
-
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
+cd ios
 bundle exec pod install
+cd ..
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+Run the app:
 
 ```sh
-# Using npm
+npm start
+npm run android
+# or
 npm run ios
-
-# OR using Yarn
-yarn ios
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+## Verification
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+```sh
+npm run verify
+cd android && ./gradlew app:assembleDebug
+```
 
-## Step 3: Modify your app
+Release builds require Android signing properties named
+`NAVIGO_UPLOAD_STORE_FILE`, `NAVIGO_UPLOAD_STORE_PASSWORD`,
+`NAVIGO_UPLOAD_KEY_ALIAS`, and `NAVIGO_UPLOAD_KEY_PASSWORD`.
 
-Now that you have successfully run the app, let's make changes!
+## External services
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+- Photon: autocomplete and reverse geocoding
+- Overpass API: nearby POIs
+- OSRM: online driving routes and alternatives
+- OpenFreeMap: MapLibre vector-map styles and tiles
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+The checked-in endpoints are public community services, not contractual
+production SLAs. A public release with sustained traffic should use
+organization-controlled or contracted endpoints, monitoring, quotas, and an
+appropriate privacy policy. Requests include timeouts, cancellation, bounded
+in-memory caching, response validation, and conservative retries.
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+Map attribution remains enabled through MapLibre. OpenStreetMap-derived data
+must retain the attribution required by its data providers.
 
-## Congratulations! :tada:
+## Location and offline behavior
 
-You've successfully run and modified your React Native App. :partying_face:
+- Android requires precise/fine foreground location.
+- iOS includes only the `LocationWhenInUse` permission handler.
+- GPS fixes over the configured accuracy threshold are rejected.
+- Offline regions store a name, center, radius, covered area, download date,
+  version, size, and status in a cached metadata index.
+- The Offline Maps screen visualizes the guaranteed circular coverage area and
+  reports whether the current GPS fix is inside a completed region.
+- The native MapLibre pack downloads the circle's enclosing tile bounds; the
+  same center and radius drive its metadata, UI, map boundary, duplicate
+  detection, and navigation coverage checks.
+- Active offline map packs are reconciled and observed after relaunch without
+  repeatedly scanning map files.
+- A map pack stores render resources; it is not a routable road graph.
 
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+For genuine offline routing, ship a versioned regional road graph and integrate
+a real offline routing engine before enabling that feature in the UI.

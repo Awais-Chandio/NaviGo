@@ -7,7 +7,7 @@ describe('SearchService', () => {
   });
 
   it('aggregates suggestions across recent, saved, nearby, and search results', async () => {
-    const suggestions = await searchService.getSuggestions('Home');
+    const suggestions = await searchService.getSuggestions('');
     expect(suggestions).toHaveProperty('recent');
     expect(suggestions).toHaveProperty('saved');
     expect(suggestions).toHaveProperty('nearby');
@@ -72,35 +72,16 @@ describe('SearchService', () => {
     }
   });
 
-  it('falls back to Nominatim repository if Photon API fails twice', async () => {
-    const mockNominatimResponse = [
-      {
-        place_id: '2001',
-        display_name: 'Hyderabad Civil Hospital, Saddar, Hyderabad, Sindh, Pakistan',
-        lat: '25.3965',
-        lon: '68.3580',
-        importance: 0.8,
-        address: { city: 'Hyderabad', country_code: 'pk' },
-      },
-    ];
-
+  it('surfaces Photon failure instead of using forbidden Nominatim autocomplete', async () => {
     const originalFetch = globalThis.fetch;
-    let callCount = 0;
-    globalThis.fetch = jest.fn().mockImplementation((url: string) => {
-      callCount++;
-      if (url.includes('photon.komoot.io')) {
-        return Promise.reject(new Error('Network failure'));
-      }
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve(mockNominatimResponse),
-      } as unknown as Response);
-    });
+    globalThis.fetch = jest
+      .fn()
+      .mockRejectedValue(new Error('Network failure'));
 
     try {
-      const results = await searchService.searchPlaces('hospital');
-      expect(results.length).toBeGreaterThanOrEqual(1);
-      expect(results[0].title).toBe('Hyderabad Civil Hospital');
+      await expect(
+        searchService.searchPlaces('unique unavailable query'),
+      ).rejects.toThrow('Photon autocomplete is currently unavailable');
     } finally {
       globalThis.fetch = originalFetch;
     }

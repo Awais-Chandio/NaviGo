@@ -1,5 +1,8 @@
 import { check, checkMultiple, PERMISSIONS, request, requestMultiple, RESULTS } from 'react-native-permissions';
 import { Alert, Platform } from 'react-native';
+import { logger } from '../utils/logger';
+
+const TAG = 'LocationPermission';
 
 let activePermissionPromise: Promise<boolean> | null = null;
 
@@ -11,15 +14,13 @@ export async function checkLocationPermissionStatus(): Promise<boolean> {
         PERMISSIONS.ANDROID.ACCESS_COARSE_LOCATION,
       ]);
       const fineGranted = statuses[PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION] === RESULTS.GRANTED;
-      const coarseGranted = statuses[PERMISSIONS.ANDROID.ACCESS_COARSE_LOCATION] === RESULTS.GRANTED;
-      const isGranted = fineGranted || coarseGranted;
-      return isGranted;
+      return fineGranted;
     } else {
       const status = await check(PERMISSIONS.IOS.LOCATION_WHEN_IN_USE);
       return status === RESULTS.GRANTED;
     }
   } catch (err) {
-    console.warn('[LocationPermission] Check status error:', err);
+    logger.warn(TAG, 'Unable to check location permission status.', err);
     return false;
   }
 }
@@ -41,7 +42,7 @@ export async function RequestLocationPermission(): Promise<boolean> {
         const fine = statuses[PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION];
         const coarse = statuses[PERMISSIONS.ANDROID.ACCESS_COARSE_LOCATION];
 
-        if (fine === RESULTS.GRANTED || coarse === RESULTS.GRANTED) {
+        if (fine === RESULTS.GRANTED) {
           return true;
         }
 
@@ -54,8 +55,16 @@ export async function RequestLocationPermission(): Promise<boolean> {
         const fineReq = requestResults[PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION];
         const coarseReq = requestResults[PERMISSIONS.ANDROID.ACCESS_COARSE_LOCATION];
 
-        const granted = fineReq === RESULTS.GRANTED || coarseReq === RESULTS.GRANTED;
-        return granted;
+        if (fineReq === RESULTS.GRANTED) {
+          return true;
+        }
+        if (coarseReq === RESULTS.GRANTED) {
+          Alert.alert(
+            'Precise Location Required',
+            'NaviGo needs precise location for safe route progress and nearby results. Enable precise location in system settings.',
+          );
+        }
+        return false;
       } else {
         const status = await check(PERMISSIONS.IOS.LOCATION_WHEN_IN_USE);
         if (status === RESULTS.GRANTED) {
@@ -69,7 +78,7 @@ export async function RequestLocationPermission(): Promise<boolean> {
         return req === RESULTS.GRANTED;
       }
     } catch (error) {
-      console.warn('Location Permission Request Error:', error);
+      logger.warn(TAG, 'Location permission request failed.', error);
       return false;
     } finally {
       activePermissionPromise = null;

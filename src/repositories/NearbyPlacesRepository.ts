@@ -3,8 +3,14 @@ import { getHaversineDistance, formatDistance } from '../utils/locationUtils';
 import { connectivityService } from '../services/connectivityService';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { logger } from '../utils/logger';
+import {
+  fetchWithTimeout,
+  isCallerAbort,
+  waitForRetry,
+} from '../utils/networkUtils';
 
 const TAG = 'NearbyPlacesService';
+const MAX_NEARBY_CACHE_ENTRIES = 50;
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -140,33 +146,6 @@ function removeProximityDuplicates(
   return unique;
 }
 
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit & { timeoutMs?: number },
-): Promise<Response> {
-  const { timeoutMs = 10000, signal, ...fetchOpts } = options;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const abortFromCaller = () => controller.abort();
-
-  if (signal) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
-      signal.addEventListener('abort', abortFromCaller, { once: true });
-    }
-  }
-
-  try {
-    const response = await fetch(url, { ...fetchOpts, signal: controller.signal });
-    return response;
-  } finally {
-    clearTimeout(timeoutId);
-    signal?.removeEventListener('abort', abortFromCaller);
-  }
-}
-
 export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
   private cache: Map<string, CacheEntry> = new Map();
   private pendingRequests: Map<string, Promise<NearbyPlace[]>> = new Map();
@@ -221,6 +200,9 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
       return cached.results;
     }
+    if (cached) {
+      this.cache.delete(cacheKey);
+    }
 
     // 3. In-flight request deduplication
     if (!signal && this.pendingRequests.has(cacheKey)) {
@@ -228,10 +210,11 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
     }
 
     const fetchPromise = (async () => {
+      const startedAt = Date.now();
       try {
         const isOnline = connectivityService.isOnlineMode();
         if (!isOnline) {
-          return [];
+          throw new Error('Nearby search is unavailable while offline.');
         }
 
         for (const currentRadiusMeters of radiusStepsMeters) {
@@ -265,7 +248,16 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
               logger.debug(TAG, `${idx + 1}. ${r.name} - ${r.distance}m`);
             });
 
-            this.cache.set(cacheKey, { timestamp: Date.now(), results: top20Results });
+            if (!this.cache.has(cacheKey) && this.cache.size >= MAX_NEARBY_CACHE_ENTRIES) {
+              const oldestKey = this.cache.keys().next().value;
+              if (typeof oldestKey === 'string') {
+                this.cache.delete(oldestKey);
+              }
+            }
+            this.cache.set(cacheKey, {
+              timestamp: Date.now(),
+              results: top20Results,
+            });
             return top20Results;
           }
         }
@@ -277,6 +269,9 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
         return [];
       } finally {
         this.pendingRequests.delete(cacheKey);
+        logger.performance(TAG, 'overpass.nearby', startedAt, {
+          category,
+        });
       }
     })();
 
@@ -302,7 +297,8 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
       .map(f => `${f}(around:${radiusMeters},${latitude},${longitude});`)
       .join(' ');
 
-    const query = `[out:json][timeout:10]; (${queryStatements}); out center 60;`;
+    const query = `[out:json][timeout:10]; (${queryStatements}); out center qt 200;`;
+    let lastError: Error | null = null;
 
     for (const baseUrl of OVERPASS_ENDPOINTS) {
       // Retry once on failure
@@ -319,6 +315,9 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
           });
 
           if (!response.ok) {
+            lastError = new Error(
+              `Overpass server unavailable (HTTP ${response.status}).`,
+            );
             continue;
           }
 
@@ -385,36 +384,29 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
             });
           }
 
-          if (places.length > 0) {
-            const cleanPlaces = removeProximityDuplicates(places);
-            // Sort nearest first (distance ascending)
-            cleanPlaces.sort((a, b) => a.distance - b.distance);
-
-            return cleanPlaces.slice(
-              0,
-              LOCATION_CONFIG.MAX_NEARBY_RESULTS || 20,
-            );
-          }
-
-          break;
+          const cleanPlaces = removeProximityDuplicates(places);
+          cleanPlaces.sort((a, b) => a.distance - b.distance);
+          return cleanPlaces.slice(
+            0,
+            LOCATION_CONFIG.MAX_NEARBY_RESULTS || 20,
+          );
         } catch (err) {
-          if (
-            err &&
-            typeof err === 'object' &&
-            'name' in err &&
-            (err as { name: string }).name === 'AbortError'
-          ) {
+          if (isCallerAbort(err, signal)) {
             throw err;
           }
+          lastError =
+            err instanceof Error
+              ? err
+              : new Error('Overpass request failed.');
           if (attempt === 1) {
             logger.info(TAG, `Overpass ${baseUrl} attempt 1 failed, retrying once...`);
-            await new Promise<void>(resolve => setTimeout(resolve, 300));
+            await waitForRetry(300, signal);
           }
         }
       }
     }
 
-    return [];
+    throw lastError || new Error('All Overpass endpoints are unavailable.');
   }
   private getFormattedCategoryTitle(category: string): string {
     if (!category) return 'Nearby';

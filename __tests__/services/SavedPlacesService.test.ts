@@ -1,21 +1,13 @@
-import { savedPlacesService, DEFAULT_HOME_PLACE, DEFAULT_WORK_PLACE } from '../../src/services/SavedPlacesService';
+import { savedPlacesService } from '../../src/services/SavedPlacesService';
 
 describe('SavedPlacesService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('populates default Home and Work places', async () => {
+  it('does not fabricate default Home and Work coordinates', async () => {
     const places = await savedPlacesService.getSavedPlaces();
-    expect(places.length).toBeGreaterThanOrEqual(2);
-
-    const home = await savedPlacesService.getPlaceByType('home');
-    expect(home?.name).toBe('Home');
-    expect(home?.address).toContain('Prince Town');
-
-    const work = await savedPlacesService.getPlaceByType('work');
-    expect(work?.name).toBe('Work');
-    expect(work?.address).toContain('Gor Colony');
+    expect(places).toEqual([]);
   });
 
   it('saves and updates a custom saved place', async () => {
@@ -41,10 +33,17 @@ describe('SavedPlacesService', () => {
     expect(updatedFound?.name).toBe('Mega Fitness Gym');
   });
 
-  it('deletes custom places and resets default home/work if deleted', async () => {
+  it('deletes saved Home without restoring a fabricated location', async () => {
+    await savedPlacesService.savePlace({
+      id: 'home',
+      name: 'Home',
+      address: 'User-selected home',
+      latitude: 25.4,
+      longitude: 68.36,
+      type: 'home',
+    });
     await savedPlacesService.deletePlace('home');
     const home = await savedPlacesService.getPlaceByType('home');
-    expect(home).toBeDefined();
-    expect(home?.address).toBe(DEFAULT_HOME_PLACE.address);
+    expect(home).toBeUndefined();
   });
 });

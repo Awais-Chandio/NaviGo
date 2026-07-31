@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger';
+
 export interface TrafficSegment {
   start: [number, number];
   end: [number, number];
@@ -72,7 +74,7 @@ export class TrafficService {
     try {
       return await this.provider.getTrafficSegments(routeCoordinates);
     } catch (err) {
-      console.warn('[TrafficService] Failed to fetch traffic segments:', err);
+      logger.warn('Traffic', 'Traffic provider request failed.', err);
       return [];
     }
   }

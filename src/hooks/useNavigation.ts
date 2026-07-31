@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { Alert, AppState } from 'react-native';
 import {
   getRouteAlternatives,
+  OfflineRoutingUnavailableError,
   type RouteDetails,
   type NavigationStep,
 } from '../services/routingService';
@@ -24,6 +25,11 @@ import {
 } from '../utils/locationUtils';
 import { logger } from '../utils/logger';
 import { LOCATION_CONFIG } from '../config/locationConfig';
+import { connectivityService } from '../services/connectivityService';
+import {
+  OfflineCoverageError,
+  offlineMapManager,
+} from '../services/offlineMapService';
 
 export type NavigationState =
   | 'idle'
@@ -46,6 +52,7 @@ interface AcceptedLocation {
   latitude: number;
   longitude: number;
   timestamp: number;
+  accuracy: number;
 }
 
 export function useNavigation() {
@@ -151,6 +158,7 @@ export function useNavigation() {
       setIsLoadingRoute(true);
 
       let routeAlternatives: RouteDetails[];
+      let routeFailure: unknown = null;
       try {
         routeAlternatives = await getRouteAlternatives(
           originLat,
@@ -161,6 +169,7 @@ export function useNavigation() {
         );
       } catch (error) {
         logger.warn('NavigationEngine', 'Route calculation failed:', error);
+        routeFailure = error;
         routeAlternatives = [];
       } finally {
         if (routeAbortRef.current === controller) {
@@ -173,9 +182,22 @@ export function useNavigation() {
 
       if (routeAlternatives.length === 0) {
         if (showFailureAlert) {
+          const offlineFailureMessage =
+            routeFailure instanceof OfflineCoverageError ||
+            routeFailure instanceof OfflineRoutingUnavailableError
+              ? routeFailure.message
+              : null;
           Alert.alert(
-            'Route Not Found',
-            'Unable to calculate a valid driving route to this destination.',
+            offlineFailureMessage
+              ? 'Offline Navigation Unavailable'
+              : routeFailure
+                ? 'Routing Unavailable'
+                : 'Route Not Found',
+            offlineFailureMessage
+              ? offlineFailureMessage
+              : routeFailure
+                ? 'The routing service is unavailable. Check your connection and try again.'
+                : 'Unable to calculate a valid driving route to this destination.',
           );
         }
         return null;
@@ -321,8 +343,55 @@ export function useNavigation() {
     }
   }, [activeRoute]);
 
-  const startNavigation = useCallback(() => {
+  const startNavigation = useCallback(async () => {
     if (!destination || !activeRoute || navigationState === 'navigating') return;
+
+    if (!connectivityService.isOnlineMode()) {
+      try {
+        await offlineMapManager.initialize();
+        const firstRouteCoordinate = activeRoute.coordinates[0];
+        const origin = lastFilteredLocationRef.current ?? {
+          latitude: firstRouteCoordinate[1],
+          longitude: firstRouteCoordinate[0],
+          timestamp: Date.now(),
+          accuracy: 10,
+        };
+        offlineMapManager.assertNavigationCoverage(
+          {
+            latitude: origin.latitude,
+            longitude: origin.longitude,
+          },
+          {
+            latitude: destination.latitude,
+            longitude: destination.longitude,
+          },
+          activeRoute.coordinates,
+        );
+        logger.info(
+          'OfflineRouting',
+          'Offline navigation coverage validation passed.',
+          {
+            destination: {
+              latitude: destination.latitude,
+              longitude: destination.longitude,
+            },
+          },
+        );
+      } catch (error) {
+        const message =
+          error instanceof OfflineCoverageError
+            ? error.message
+            : 'Offline map coverage could not be verified. Reconnect or open Offline Maps and try again.';
+        logger.warn(
+          'OfflineRouting',
+          'Offline navigation coverage validation failed.',
+          error,
+        );
+        Alert.alert('Offline Navigation Unavailable', message);
+        return;
+      }
+    }
+
     navigationStateRef.current = 'navigating';
     arrivalHandledRef.current = false;
     arrivalCandidateCountRef.current = 0;
@@ -468,7 +537,17 @@ export function useNavigation() {
           0.1,
           (fixTimestamp - previousRawLocation.timestamp) / 1000,
         );
-        measuredSpeedKmH = calculateSpeed(rawDistanceDelta, elapsedSeconds);
+        const minimumReliableMovement = Math.max(
+          2,
+          Math.min(
+            12,
+            ((previousRawLocation.accuracy + userAccuracy) / 2) * 0.35,
+          ),
+        );
+        measuredSpeedKmH =
+          rawDistanceDelta >= minimumReliableMovement
+            ? calculateSpeed(rawDistanceDelta, elapsedSeconds)
+            : 0;
       }
       if (
         typeof userSpeedMetersPerSecond === 'number' &&
@@ -542,11 +621,13 @@ export function useNavigation() {
         latitude: userLat,
         longitude: userLng,
         timestamp: fixTimestamp,
+        accuracy: userAccuracy,
       };
       lastFilteredLocationRef.current = {
         latitude: filteredLatitude,
         longitude: filteredLongitude,
         timestamp: fixTimestamp,
+        accuracy: userAccuracy,
       };
 
       if (
@@ -566,8 +647,8 @@ export function useNavigation() {
           filteredLongitude,
         );
         const noiseFloorMeters = Math.max(
-          1,
-          Math.min(5, userAccuracy * 0.2),
+          3,
+          Math.min(15, userAccuracy * 0.5),
         );
         if (journeyDelta >= noiseFloorMeters) {
           journeyDistanceTraveledRef.current += journeyDelta;
@@ -580,6 +661,7 @@ export function useNavigation() {
         latitude: filteredLatitude,
         longitude: filteredLongitude,
         timestamp: fixTimestamp,
+        accuracy: userAccuracy,
       };
 
       if (

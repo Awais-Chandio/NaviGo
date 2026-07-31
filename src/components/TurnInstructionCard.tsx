@@ -64,7 +64,11 @@ export const TurnInstructionCard: React.FC<TurnInstructionCardProps> = ({
         {laneInfo && laneInfo.lanes && laneInfo.lanes.length > 0 && (
           <View style={styles.lanesContainer}>
             {laneInfo.lanes.map((lane, index) =>
-              renderLaneIcon(lane, lane === laneInfo.recommendedLane, index),
+              renderLaneIcon(
+                lane,
+                index === laneInfo.recommendedLaneIndex,
+                index,
+              ),
             )}
           </View>
         )}

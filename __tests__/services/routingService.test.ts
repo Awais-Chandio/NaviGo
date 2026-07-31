@@ -1,15 +1,23 @@
 import {
   normalizeAndSortRoutes,
+  OfflineRoutingUnavailableError,
   parseOSRMSteps,
+  routingService,
+  type OSRMStep,
 } from '../../src/services/routingService';
 import {
   InvalidRoutingResponseError,
   OSRMPlanRoutingRepository,
 } from '../../src/repositories/RoutingRepository';
+import { connectivityService } from '../../src/services/connectivityService';
+import {
+  OfflineCoverageError,
+  offlineMapManager,
+} from '../../src/services/offlineMapService';
 
 describe('routingService', () => {
   test('parseOSRMSteps converts raw OSRM steps into user instructions', () => {
-    const rawSteps: any[] = [
+    const rawSteps: OSRMStep[] = [
       {
         distance: 120,
         duration: 15,
@@ -145,5 +153,41 @@ describe('routingService', () => {
     expect(routes[0].coordinates[1]).toEqual([68.01, 25.01]);
     expect(routes[0].distanceMeters).toBe(1900);
     expect(routes[0].durationSeconds).toBe(300);
+  });
+
+  test('offline routing explains when endpoints lack downloaded coverage', async () => {
+    connectivityService.setMode('offline');
+    try {
+      await expect(
+        routingService.getRouteAlternatives(24, 67, 24.1, 67.1),
+      ).rejects.toBeInstanceOf(OfflineCoverageError);
+    } finally {
+      connectivityService.setMode('online');
+    }
+  });
+
+  test('offline routing distinguishes map coverage from a missing routing graph', async () => {
+    await offlineMapManager.initialize();
+    const region = await offlineMapManager.createRegionAroundPoint({
+      name: 'Offline Routing Test',
+      center: { latitude: 25.2, longitude: 68.2 },
+      radiusKm: 10,
+    });
+    await offlineMapManager.downloadRegion(region.id);
+    connectivityService.setMode('offline');
+
+    try {
+      await expect(
+        routingService.getRouteAlternatives(
+          25.2,
+          68.2,
+          25.21,
+          68.21,
+        ),
+      ).rejects.toBeInstanceOf(OfflineRoutingUnavailableError);
+    } finally {
+      connectivityService.setMode('online');
+      await offlineMapManager.deleteRegion(region.id);
+    }
   });
 });

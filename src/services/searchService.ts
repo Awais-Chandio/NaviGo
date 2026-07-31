@@ -1,10 +1,10 @@
 import {
   ISearchRepository,
-  NominatimSearchRepository,
   PhotonSearchRepository,
   detectCategory,
   parseNominatimTitleAndSubtitle,
 } from '../repositories/SearchRepository';
+import { logger } from '../utils/logger';
 
 export interface SearchPlaceItem {
   id: string | number;
@@ -84,13 +84,15 @@ export class NominatimPlacesProvider implements PlacesProvider {
 }
 
 export class OfflinePlacesProvider implements PlacesProvider {
-  private localDatabasePath: string = '/data/user/0/com.navigo/files/offline_tiles/places.sqlite';
-
   async searchPlaces(
     query: string,
     _options?: SearchOptions,
   ): Promise<SearchPlaceItem[]> {
-    console.log(`[OfflinePlacesProvider] Searching local database (${this.localDatabasePath}) for: "${query}"`);
+    logger.warn(
+      'Search',
+      'Offline place index is not installed; search is unavailable.',
+      { queryLength: query.trim().length },
+    );
     return [];
   }
 
@@ -99,7 +101,10 @@ export class OfflinePlacesProvider implements PlacesProvider {
     longitude: number,
     _signal?: AbortSignal,
   ): Promise<string> {
-    console.log(`[OfflinePlacesProvider] Reverse geocoding offline coordinate: ${latitude}, ${longitude}`);
+    logger.warn(
+      'Search',
+      'Offline reverse-geocoding index is not installed.',
+    );
     return `Offline Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`;
   }
 }
@@ -115,11 +120,11 @@ export class SearchService {
     this.repository = repository;
   }
 
-  public setOnlineProvider(provider: PlacesProvider) {
+  public setOnlineProvider(_provider: PlacesProvider) {
     // Kept for backward compatibility
   }
 
-  public setOfflineProvider(provider: PlacesProvider) {
+  public setOfflineProvider(_provider: PlacesProvider) {
     // Kept for backward compatibility
   }
 

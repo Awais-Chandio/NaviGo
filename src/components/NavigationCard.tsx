@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationState, DestinationInfo } from '../hooks/useNavigation';
-import { voiceService } from '../services/voiceService';
 
 interface NavigationCardProps {
   navigationState: NavigationState;
@@ -18,10 +17,12 @@ interface NavigationCardProps {
   isRerouting?: boolean;
   formattedDistance: string;
   formattedDuration: string;
-  remainingDurationSeconds?: number;
+  eta: string;
   currentSpeed?: number;
   currentRoad?: string;
   nextInstruction: string;
+  isMuted: boolean;
+  onToggleVoiceMute: () => void;
   onStartNavigation: () => void;
   onCancelNavigation: () => void;
 }
@@ -33,17 +34,17 @@ export const NavigationCard: React.FC<NavigationCardProps> = React.memo(({
   isRerouting = false,
   formattedDistance,
   formattedDuration,
-  remainingDurationSeconds = 0,
+  eta,
   currentSpeed = 0,
   currentRoad = '',
   nextInstruction,
+  isMuted,
+  onToggleVoiceMute,
   onStartNavigation,
   onCancelNavigation,
 }) => {
   const insets = useSafeAreaInsets();
   const slideAnim = useRef(new Animated.Value(200)).current;
-  const [isMuted, setIsMuted] = useState<boolean>(voiceService.isMuted());
-
   useEffect(() => {
     if (destination && navigationState !== 'idle') {
       Animated.spring(slideAnim, {
@@ -56,18 +57,6 @@ export const NavigationCard: React.FC<NavigationCardProps> = React.memo(({
       slideAnim.setValue(200);
     }
   }, [destination, navigationState, slideAnim]);
-
-  const handleToggleVoice = () => {
-    const nextMuted = !isMuted;
-    voiceService.setMuted(nextMuted);
-    setIsMuted(nextMuted);
-  };
-
-  const estimatedETA = useMemo(() => {
-    if (!remainingDurationSeconds || remainingDurationSeconds <= 0) return '--:--';
-    const etaDate = new Date(Date.now() + remainingDurationSeconds * 1000);
-    return etaDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }, [remainingDurationSeconds]);
 
   if (!destination || navigationState === 'idle') return null;
 
@@ -86,7 +75,11 @@ export const NavigationCard: React.FC<NavigationCardProps> = React.memo(({
       {isNavigating && (
         <View style={[styles.instructionBanner, isRerouting && styles.reroutingBanner]}>
           {isRerouting ? (
-            <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 10 }} />
+            <ActivityIndicator
+              size="small"
+              color="#ffffff"
+              style={styles.reroutingSpinner}
+            />
           ) : (
             <Text style={styles.instructionIcon}>🏎️</Text>
           )}
@@ -109,7 +102,7 @@ export const NavigationCard: React.FC<NavigationCardProps> = React.memo(({
         </View>
 
         <View style={styles.headerActions}>
-          <Pressable onPress={handleToggleVoice} style={styles.iconButton}>
+          <Pressable onPress={onToggleVoiceMute} style={styles.iconButton}>
             <Text style={styles.iconButtonText}>{isMuted ? '🔇' : '🔊'}</Text>
           </Pressable>
 
@@ -134,7 +127,7 @@ export const NavigationCard: React.FC<NavigationCardProps> = React.memo(({
 
         <View style={styles.metricBadge}>
           <Text style={styles.metricLabel}>Arrival ETA</Text>
-          <Text style={styles.metricValueEta}>{estimatedETA}</Text>
+          <Text style={styles.metricValueEta}>{eta || '--:--'}</Text>
         </View>
 
         {isNavigating && (
@@ -207,6 +200,9 @@ const styles = StyleSheet.create({
   },
   reroutingBanner: {
     backgroundColor: '#e65100',
+  },
+  reroutingSpinner: {
+    marginRight: 10,
   },
 
   instructionIcon: {

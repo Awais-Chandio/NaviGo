@@ -6,6 +6,7 @@ import PersonPinCircle from '../assets/icons/personPinCircle.svg';
 interface MapControlsProps {
   bearing: number;
   hasDestination: boolean;
+  hasLocationFix?: boolean;
   isFollowingUser?: boolean;
   onResetCompass: () => void;
   onRecenter: () => void;
@@ -17,6 +18,7 @@ interface MapControlsProps {
 export const MapControls: React.FC<MapControlsProps> = ({
   bearing,
   hasDestination,
+  hasLocationFix = true,
   isFollowingUser = true,
   onResetCompass,
   onRecenter,
@@ -35,7 +37,10 @@ export const MapControls: React.FC<MapControlsProps> = ({
       {onOpenOfflineMaps && (
         <Pressable
           accessibilityLabel="Offline Maps"
-          style={({ pressed }) => [styles.controlBtn, pressed && styles.pressed]}
+          style={({ pressed }) => [
+            styles.controlBtn,
+            pressed && styles.pressed,
+          ]}
           onPress={onOpenOfflineMaps}
         >
           <Text style={styles.iconText}>📥</Text>
@@ -74,8 +79,10 @@ export const MapControls: React.FC<MapControlsProps> = ({
           styles.controlBtn,
           styles.recenterBtn,
           !isFollowingUser && styles.recenterBtnInactive,
+          !hasLocationFix && styles.controlBtnDisabled,
           pressed && styles.pressed,
         ]}
+        disabled={!hasLocationFix}
         onPress={onRecenter}
       >
         <PersonPinCircle
@@ -120,6 +127,9 @@ const styles = StyleSheet.create({
   recenterBtnInactive: {
     borderWidth: 2,
     borderColor: '#1A73E8',
+  },
+  controlBtnDisabled: {
+    opacity: 0.45,
   },
   zoomText: {
     fontSize: 22,

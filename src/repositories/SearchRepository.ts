@@ -7,8 +7,14 @@ import { nearbyPlacesService } from '../services/NearbyPlacesService';
 import { NEARBY_CATEGORIES } from '../config/nearbyCategories';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { logger } from '../utils/logger';
+import {
+  fetchWithTimeout,
+  isCallerAbort,
+  waitForRetry,
+} from '../utils/networkUtils';
 
 const TAG = 'SearchRepository';
+const MAX_SEARCH_CACHE_ENTRIES = 100;
 
 export interface ISearchRepository {
   searchPlaces(query: string, options?: SearchOptions): Promise<SearchPlaceItem[]>;
@@ -157,31 +163,18 @@ export function parseNominatimTitleAndSubtitle(
   return { title, subtitle };
 }
 
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit & { timeoutMs?: number },
-): Promise<Response> {
-  const { timeoutMs = 10000, signal, ...fetchOpts } = options;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const abortFromCaller = () => controller.abort();
-
-  if (signal) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
-      signal.addEventListener('abort', abortFromCaller, { once: true });
+function setBoundedCache<T>(
+  cache: Map<string, CacheEntry<T>>,
+  key: string,
+  entry: CacheEntry<T>,
+): void {
+  if (!cache.has(key) && cache.size >= MAX_SEARCH_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (typeof oldestKey === 'string') {
+      cache.delete(oldestKey);
     }
   }
-
-  try {
-    const response = await fetch(url, { ...fetchOpts, signal: controller.signal });
-    return response;
-  } finally {
-    clearTimeout(timeoutId);
-    signal?.removeEventListener('abort', abortFromCaller);
-  }
+  cache.set(key, entry);
 }
 
 export class NominatimSearchRepository implements ISearchRepository {
@@ -213,6 +206,9 @@ export class NominatimSearchRepository implements ISearchRepository {
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
       return cached.data;
     }
+    if (cached) {
+      this.cache.delete(cacheKey);
+    }
 
     // 2. Check duplicate in-flight requests
     if (this.pendingRequests.has(cacheKey)) {
@@ -220,15 +216,22 @@ export class NominatimSearchRepository implements ISearchRepository {
     }
 
     const fetchPromise = (async () => {
+      const startedAt = Date.now();
       try {
         const limit = options?.limit ?? 15;
         const userLoc = options?.userLocation;
-        const countryCodeParam = options?.countryCode ? `&countrycodes=${options.countryCode}` : '';
+        const countryCodeParam = `&countrycodes=${(
+          options?.countryCode || 'pk'
+        ).toLowerCase()}`;
 
         let viewboxBoundedParam = '';
         let viewboxUnboundedParam = '';
 
-        if (userLoc?.latitude && userLoc?.longitude) {
+        if (
+          userLoc &&
+          Number.isFinite(userLoc?.latitude) &&
+          Number.isFinite(userLoc?.longitude)
+        ) {
           // Construct viewbox around user GPS (delta = 0.25 deg ~25km)
           const delta = 0.25;
           const left = userLoc.longitude - delta;
@@ -288,24 +291,6 @@ export class NominatimSearchRepository implements ISearchRepository {
             data = await response.json();
           }
 
-          if ((!Array.isArray(data) || data.length === 0) && (viewboxUnboundedParam || countryCodeParam)) {
-            const globalFallbackUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
-              trimmedQuery,
-            )}&accept-language=en,en-US&addressdetails=1&namedetails=1&extratags=1&limit=${limit}`;
-
-            response = await fetchWithTimeout(globalFallbackUrl, {
-              headers: {
-                Accept: 'application/json',
-                'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
-              },
-              signal: options?.signal,
-              timeoutMs: 10000,
-            });
-
-            if (response.ok) {
-              data = await response.json();
-            }
-          }
         }
 
         if (!Array.isArray(data)) {
@@ -325,6 +310,16 @@ export class NominatimSearchRepository implements ISearchRepository {
           const { title, subtitle } = parseNominatimTitleAndSubtitle(displayName, namedetails, addressObj);
           const lat = parseFloat(String(item.lat ?? 0));
           const lon = parseFloat(String(item.lon ?? 0));
+          if (
+            !Number.isFinite(lat) ||
+            lat < -90 ||
+            lat > 90 ||
+            !Number.isFinite(lon) ||
+            lon < -180 ||
+            lon > 180
+          ) {
+            continue;
+          }
           const itemType = typeof item.type === 'string' ? item.type : undefined;
           const itemCat = typeof item.category === 'string' ? item.category : undefined;
           const category = detectCategory(displayName, itemType || itemCat);
@@ -332,7 +327,11 @@ export class NominatimSearchRepository implements ISearchRepository {
           let distanceMeters: number | undefined;
           let formattedDist: string | undefined;
 
-          if (userLoc?.latitude && userLoc?.longitude && lat && lon) {
+          if (
+            userLoc &&
+            Number.isFinite(userLoc?.latitude) &&
+            Number.isFinite(userLoc?.longitude)
+          ) {
             distanceMeters = Math.round(
               getHaversineDistance(userLoc.latitude, userLoc.longitude, lat, lon),
             );
@@ -379,7 +378,6 @@ export class NominatimSearchRepository implements ISearchRepository {
             categoryIcon: category.icon,
             categoryName: category.name,
             rankingScore,
-            raw: item,
           });
         }
 
@@ -394,12 +392,19 @@ export class NominatimSearchRepository implements ISearchRepository {
         filteredResults.sort((a, b) => b.rankingScore - a.rankingScore);
 
         const cleanResults: SearchPlaceItem[] = filteredResults.map(result => {
-          const { rankingScore: _rankingScore, ...item } = result;
+          const item: SearchPlaceItem & { rankingScore?: number } = {
+            ...result,
+          };
+          delete item.rankingScore;
           return item;
         });
 
         // Logging search execution details
-        if (userLoc?.latitude && userLoc?.longitude) {
+        if (
+          userLoc &&
+          Number.isFinite(userLoc?.latitude) &&
+          Number.isFinite(userLoc?.longitude)
+        ) {
           logger.info(
             TAG,
             `[GPS: ${userLoc.latitude.toFixed(5)}, ${userLoc.longitude.toFixed(5)}] API used: Nominatim API | Search: "${trimmedQuery}" | Results Count: ${cleanResults.length}`,
@@ -415,10 +420,16 @@ export class NominatimSearchRepository implements ISearchRepository {
           );
         });
 
-        this.cache.set(cacheKey, { timestamp: Date.now(), data: cleanResults });
+        setBoundedCache(this.cache, cacheKey, {
+          timestamp: Date.now(),
+          data: cleanResults,
+        });
         return cleanResults;
       } finally {
         this.pendingRequests.delete(cacheKey);
+        logger.performance(TAG, 'nominatim.search', startedAt, {
+          queryLength: trimmedQuery.length,
+        });
       }
     })();
 
@@ -478,13 +489,8 @@ export class NominatimSearchRepository implements ISearchRepository {
 
       return { displayName, detectedArea };
     } catch (error: unknown) {
-      if (
-        error &&
-        typeof error === 'object' &&
-        'name' in error &&
-        (error as { name: string }).name === 'AbortError'
-      ) {
-        return { displayName: '', detectedArea: 'Current Location' };
+      if (isCallerAbort(error, signal)) {
+        throw error;
       }
       return { displayName: 'Address unavailable', detectedArea: 'Current Location' };
     }
@@ -587,7 +593,8 @@ export class PhotonSearchRepository implements ISearchRepository {
     const qNorm = query.trim().toLowerCase();
     const latGrid = (options?.userLocation?.latitude ?? LOCATION_CONFIG.DEFAULT_REGION.latitude).toFixed(2);
     const lonGrid = (options?.userLocation?.longitude ?? LOCATION_CONFIG.DEFAULT_REGION.longitude).toFixed(2);
-    return `${qNorm}_${latGrid}_${lonGrid}_${options?.limit || 15}`;
+    const country = (options?.countryCode || 'PK').toUpperCase();
+    return `${qNorm}_${latGrid}_${lonGrid}_${country}_${options?.limit || 15}`;
   }
 
   public async searchPlaces(
@@ -606,6 +613,9 @@ export class PhotonSearchRepository implements ISearchRepository {
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
       return cached.data;
     }
+    if (cached) {
+      this.cache.delete(cacheKey);
+    }
 
     // 2. Check duplicate in-flight requests
     if (!options?.signal && this.pendingRequests.has(cacheKey)) {
@@ -613,6 +623,7 @@ export class PhotonSearchRepository implements ISearchRepository {
     }
 
     const fetchPromise = (async () => {
+      const startedAt = Date.now();
       try {
         const userLoc = options?.userLocation || {
           latitude: LOCATION_CONFIG.DEFAULT_REGION.latitude,
@@ -625,7 +636,7 @@ export class PhotonSearchRepository implements ISearchRepository {
         const pakistanBoundingBox = '60.87,23.63,77.84,37.10';
         const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(
           trimmedQuery,
-        )}&lat=${userLoc.latitude}&lon=${userLoc.longitude}&lang=en&limit=${limit * 2}&bbox=${pakistanBoundingBox}`;
+        )}&lat=${userLoc.latitude}&lon=${userLoc.longitude}&lang=en&limit=${limit * 2}&bbox=${pakistanBoundingBox}&countrycode=PK`;
 
         let data: unknown = null;
 
@@ -646,17 +657,12 @@ export class PhotonSearchRepository implements ISearchRepository {
               break;
             }
           } catch (err) {
-            if (
-              err &&
-              typeof err === 'object' &&
-              'name' in err &&
-              (err as { name: string }).name === 'AbortError'
-            ) {
+            if (isCallerAbort(err, options?.signal)) {
               throw err;
             }
             if (attempt === 1) {
               logger.info(TAG, `Photon API attempt 1 failed, retrying once...`);
-              await new Promise<void>(resolve => setTimeout(() => resolve(), 300));
+              await waitForRetry(300, options?.signal);
             }
           }
         }
@@ -666,7 +672,7 @@ export class PhotonSearchRepository implements ISearchRepository {
         // that endpoint as a hidden typeahead fallback.
         if (!data || typeof data !== 'object' || !('features' in data)) {
           logger.warn(TAG, 'Photon autocomplete unavailable after retry.');
-          return [];
+          throw new Error('Photon autocomplete is currently unavailable.');
         }
 
         const featureCollection = data as { features?: Record<string, unknown>[] };
@@ -772,7 +778,6 @@ export class PhotonSearchRepository implements ISearchRepository {
             categoryIcon: category.icon,
             categoryName: category.name,
             rankingScore,
-            raw: feat,
           });
         }
 
@@ -795,7 +800,10 @@ export class PhotonSearchRepository implements ISearchRepository {
         const cleanResults: SearchPlaceItem[] = uniqueResults
           .slice(0, limit)
           .map(result => {
-            const { rankingScore: _rankingScore, ...item } = result;
+            const item: SearchPlaceItem & { rankingScore?: number } = {
+              ...result,
+            };
+            delete item.rankingScore;
             return item;
           });
 
@@ -811,10 +819,16 @@ export class PhotonSearchRepository implements ISearchRepository {
           );
         });
 
-        this.cache.set(cacheKey, { timestamp: Date.now(), data: cleanResults });
+        setBoundedCache(this.cache, cacheKey, {
+          timestamp: Date.now(),
+          data: cleanResults,
+        });
         return cleanResults;
       } finally {
         this.pendingRequests.delete(cacheKey);
+        logger.performance(TAG, 'photon.search', startedAt, {
+          queryLength: trimmedQuery.length,
+        });
       }
     })();
 
@@ -902,12 +916,7 @@ export class PhotonSearchRepository implements ISearchRepository {
           district || city || county || street || name || 'Current Location',
       };
     } catch (error: unknown) {
-      if (
-        error &&
-        typeof error === 'object' &&
-        'name' in error &&
-        (error as { name: string }).name === 'AbortError'
-      ) {
+      if (isCallerAbort(error, signal)) {
         throw error;
       }
       logger.warn(TAG, 'Photon reverse geocoding unavailable.', error);

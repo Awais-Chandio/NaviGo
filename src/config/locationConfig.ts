@@ -47,8 +47,8 @@ export const LOCATION_CONFIG = {
   /** Default search radius in km for nearby places */
   DEFAULT_NEARBY_SEARCH_RADIUS_KM: 2,
 
-  /** Delta for downloading offline map area around current position (~9km radius) */
-  OFFLINE_REGION_DELTA_DEG: 0.08,
+  /** Guaranteed circular coverage radius for a current-area offline download */
+  DEFAULT_OFFLINE_REGION_RADIUS_KM: 10,
 
   /** Battery optimization - Location watch interval in normal mode (ms) */
   NORMAL_LOCATION_INTERVAL: 5000,

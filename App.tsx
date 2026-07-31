@@ -3,6 +3,7 @@ import { View, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import MapScreen from './src/screens/MapScreen';
 import { SplashScreen } from './src/components/SplashScreen';
+import { AppErrorBoundary } from './src/components/AppErrorBoundary';
 
 export default function App() {
   const [isSplashActive, setIsSplashActive] = useState<boolean>(true);
@@ -14,7 +15,9 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <View style={styles.container}>
-        <MapScreen />
+        <AppErrorBoundary>
+          <MapScreen />
+        </AppErrorBoundary>
         {isSplashActive && <SplashScreen onFinish={handleSplashFinish} />}
       </View>
     </SafeAreaProvider>

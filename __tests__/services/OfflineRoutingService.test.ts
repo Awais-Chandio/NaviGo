@@ -1,7 +1,7 @@
 import offlineRoutingService from '../../src/services/OfflineRoutingService';
 
 describe('OfflineRoutingService', () => {
-  it('calculates offline route with distance, duration, polyline coordinates, and steps', async () => {
+  it('reports unavailable instead of fabricating a straight-line driving route', async () => {
     const route = await offlineRoutingService.calculateOfflineRoute(
       25.396,
       68.3578,
@@ -9,10 +9,7 @@ describe('OfflineRoutingService', () => {
       68.368,
     );
 
-    expect(route).toBeDefined();
-    expect(route.distanceMeters).toBeGreaterThan(0);
-    expect(route.durationSeconds).toBeGreaterThan(0);
-    expect(route.coordinates.length).toBeGreaterThan(2);
-    expect(route.steps.length).toBeGreaterThan(0);
+    expect(offlineRoutingService.isAvailable()).toBe(false);
+    expect(route).toBeNull();
   });
 });

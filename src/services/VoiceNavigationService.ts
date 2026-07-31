@@ -1,36 +1,75 @@
-import { NativeModules } from 'react-native';
+import Tts from 'react-native-tts';
 import { logger } from '../utils/logger';
 
-interface NativeTextToSpeechModule {
-  speak(text: string): void;
-  stop?(): void;
-}
-
 export class VoiceNavigationService {
-  private isMutedState: boolean = false;
-  private lastSpokenText: string = '';
-  private lastSpokenTime: number = 0;
-  private ttsModule: NativeTextToSpeechModule | null = null;
+  private isMutedState = false;
+  private lastSpokenText = '';
+  private isSessionActive = false;
+  private isReady = false;
+  private initializationFailed = false;
+  private pendingText: string | null = null;
+  private readonly initializationPromise: Promise<boolean>;
 
   constructor() {
+    this.initializationPromise = this.initialize();
+  }
+
+  private async initialize(): Promise<boolean> {
     try {
-      // Lazy attempt to bind react-native-tts if available
-      this.ttsModule =
-        (NativeModules.TextToSpeech as NativeTextToSpeechModule | undefined) ||
-        (NativeModules.Tts as NativeTextToSpeechModule | undefined) ||
-        null;
-    } catch {
-      this.ttsModule = null;
+      await Tts.getInitStatus();
+      this.isReady = true;
+      logger.info(
+        'VoiceNavigation',
+        'Native text-to-speech initialized successfully.',
+      );
+
+      Tts.setDucking(true).catch(error => {
+        logger.warn('VoiceNavigation', 'Unable to enable TTS ducking.', error);
+      });
+      Tts.setDefaultLanguage('en-PK').catch(error => {
+        logger.warn(
+          'VoiceNavigation',
+          'The preferred en-PK TTS voice is unavailable; using the device default.',
+          error,
+        );
+      });
+
+      const pendingText = this.pendingText;
+      this.pendingText = null;
+      if (pendingText && !this.isMutedState) {
+        this.performSpeak(pendingText);
+      }
+      return true;
+    } catch (error) {
+      this.initializationFailed = true;
+      this.pendingText = null;
+      logger.warn(
+        'VoiceNavigation',
+        'Native text-to-speech is unavailable on this device.',
+        error,
+      );
+      return false;
     }
   }
 
-  private isSessionActive: boolean = false;
+  private performSpeak(text: string): void {
+    try {
+      Tts.speak(text, {
+        androidParams: {
+          KEY_PARAM_STREAM: 'STREAM_MUSIC',
+          KEY_PARAM_VOLUME: 1,
+          KEY_PARAM_PAN: 0,
+        },
+      } as Parameters<typeof Tts.speak>[1]);
+    } catch (error) {
+      logger.warn('VoiceNavigation', 'Native TTS speak failed.', error);
+    }
+  }
 
   public startSession(destinationName: string): void {
     if (this.isSessionActive) return;
     this.isSessionActive = true;
-    const initialText = `Starting navigation to ${destinationName}`;
-    this.speak(initialText, true);
+    this.speak(`Starting navigation to ${destinationName}`, true);
   }
 
   public endSession(): void {
@@ -38,27 +77,24 @@ export class VoiceNavigationService {
     this.stop();
   }
 
-  public speak(text: string, force: boolean = false): void {
+  public speak(text: string, force = false): void {
     if (this.isMutedState || !text) return;
-
-    const now = Date.now();
-    // Prevent repeating identical text within 4 seconds unless forced
-    if (!force && text === this.lastSpokenText && now - this.lastSpokenTime < 4000) {
-      return;
-    }
+    if (!force && text === this.lastSpokenText) return;
 
     this.lastSpokenText = text;
-    this.lastSpokenTime = now;
-
     logger.info('VoiceNavigation', text);
 
-    if (this.ttsModule && typeof this.ttsModule.speak === 'function') {
-      try {
-        this.ttsModule.speak(text);
-      } catch (err) {
-        console.warn('Native TTS speak error:', err);
-      }
+    if (this.isReady) {
+      this.performSpeak(text);
+    } else if (!this.initializationFailed) {
+      // Keep only the newest instruction while the native engine starts. This
+      // avoids playing stale maneuver prompts after initialization completes.
+      this.pendingText = text;
     }
+  }
+
+  public isAvailable(): boolean {
+    return !this.initializationFailed;
   }
 
   public speakManeuverPrompt(
@@ -82,15 +118,11 @@ export class VoiceNavigationService {
   }
 
   public stop(): void {
+    this.pendingText = null;
     this.lastSpokenText = '';
-    this.lastSpokenTime = 0;
-    if (this.ttsModule && typeof this.ttsModule.stop === 'function') {
-      try {
-        this.ttsModule.stop();
-      } catch {
-        // silent fallback
-      }
-    }
+    Tts.stop().catch(error => {
+      logger.warn('VoiceNavigation', 'Unable to stop native TTS.', error);
+    });
   }
 
   public setMuted(muted: boolean): boolean {

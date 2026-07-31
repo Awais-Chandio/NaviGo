@@ -9,6 +9,7 @@ import { reverseGeocodeDetails } from '../services/searchService';
 import { RequestLocationPermission } from '../permissions/locationPermission';
 import { getHaversineDistance } from '../utils/locationUtils';
 import { LOCATION_CONFIG } from '../config/locationConfig';
+import { logger } from '../utils/logger';
 
 export function useLocation(isNavigating = false) {
   const [location, setLocation] = useState<LocationData>({
@@ -73,7 +74,7 @@ export function useLocation(isNavigating = false) {
         ) {
           return;
         }
-        console.warn('Reverse geocode error in useLocation:', err);
+        logger.warn('GPS', 'Reverse geocoding failed.', err);
       } finally {
         if (reverseAbortRef.current === controller) {
           reverseAbortRef.current = null;
@@ -95,6 +96,7 @@ export function useLocation(isNavigating = false) {
 
     watchIdRef.current = watchLocationUpdates(
       newLoc => {
+        if (!isMountedRef.current) return;
         setLocation(prev => {
           if (
             prev &&
@@ -113,7 +115,8 @@ export function useLocation(isNavigating = false) {
         updateAddressIfNeeded(newLoc.latitude, newLoc.longitude);
       },
       err => {
-        console.warn('GPS Watch Error:', err);
+        if (!isMountedRef.current) return;
+        logger.warn('GPS', 'Location watch failed.', err);
         const errMsg =
           err && typeof err === 'object' && 'message' in err
             ? String((err as { message: unknown }).message)

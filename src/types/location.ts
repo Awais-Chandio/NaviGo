@@ -15,6 +15,11 @@ export interface RegionBoundingBox {
   maxLng: number;
 }
 
+export interface OfflineRegionCenter {
+  latitude: number;
+  longitude: number;
+}
+
 export type OfflineRegionStatus =
   | 'idle'
   | 'queued'
@@ -39,9 +44,13 @@ export interface OfflineRegion {
   id: string;
   nativePackId?: string;
   name: string;
+  center: OfflineRegionCenter;
+  radiusKm: number;
+  coverageAreaKm2: number;
   bounds: RegionBoundingBox;
   minZoom: number;
   maxZoom: number;
+  version: number;
   status: OfflineRegionStatus;
   isDownloaded?: boolean;
   sizeBytes: number;
@@ -49,7 +58,18 @@ export interface OfflineRegion {
   downloadedTileCount: number;
   createdAt: string;
   updatedAt: string;
+  downloadedAt?: string;
   styleUrl?: string;
+}
+
+export interface OfflineCoverageValidation {
+  isValid: boolean;
+  originCovered: boolean;
+  destinationCovered: boolean;
+  routeCovered: boolean;
+  originRegionIds: string[];
+  destinationRegionIds: string[];
+  message: string;
 }
 
 export type ProgressCallback = (progress: DownloadProgress) => void;

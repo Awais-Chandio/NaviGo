@@ -101,15 +101,20 @@ export class GeometricMapMatchingProvider implements MapMatchingProvider {
       startIndex,
       endIndex,
     );
-    const globalProjection =
-      startIndex === 0 && endIndex === finalSegmentIndex
-        ? localProjection
-        : findClosestPointOnRoute(
-            latitude,
-            longitude,
-            routeCoordinates,
-            metrics,
-          );
+    // Stay within the local forward window while the fix is close to the
+    // expected route. A full-polyline scan is only needed for reacquisition.
+    const needsGlobalReacquisition =
+      startIndex !== 0 &&
+      endIndex !== finalSegmentIndex &&
+      localProjection.distanceMeters > 25;
+    const globalProjection = needsGlobalReacquisition
+      ? findClosestPointOnRoute(
+          latitude,
+          longitude,
+          routeCoordinates,
+          metrics,
+        )
+      : localProjection;
 
     let selectedProjection = localProjection;
     if (

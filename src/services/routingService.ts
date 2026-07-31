@@ -1,12 +1,24 @@
 import { formatDistance, formatDuration } from '../utils/locationUtils';
 import {
   IRoutingRepository,
-  InvalidRoutingResponseError,
   NoRouteFoundError,
   OSRMPlanRoutingRepository,
   OfflineGraphRoutingRepository,
 } from '../repositories/RoutingRepository';
 import { connectivityService } from './connectivityService';
+import { logger } from '../utils/logger';
+import {
+  offlineMapManager,
+} from './offlineMapService';
+
+export class OfflineRoutingUnavailableError extends Error {
+  constructor(
+    message = 'Offline routing data is not installed. Downloaded maps can be viewed offline, but creating a new route still requires an internet connection.',
+  ) {
+    super(message);
+    this.name = 'OfflineRoutingUnavailableError';
+  }
+}
 
 export interface OSRMManeuver {
   type: string;
@@ -37,7 +49,7 @@ export interface OSRMStep {
 
 export interface LaneInstruction {
   lanes: string[];
-  recommendedLane?: string;
+  recommendedLaneIndex?: number;
 }
 
 export interface NavigationStep {
@@ -210,8 +222,8 @@ function parseLaneInstructions(
 
   return {
     lanes,
-    recommendedLane:
-      recommendedIndex >= 0 ? lanes[recommendedIndex] : undefined,
+    recommendedLaneIndex:
+      recommendedIndex >= 0 ? recommendedIndex : undefined,
   };
 }
 
@@ -372,14 +384,12 @@ export class RoutingService {
     signal?: AbortSignal,
   ): Promise<RouteDetails[]> {
     if (connectivityService.getMode() === 'offline') {
-      return normalizeAndSortRoutes(
-        await this.offlineRepo.getRouteAlternatives(
-          startLat,
-          startLng,
-          endLat,
-          endLng,
-          signal,
-        ),
+      return this.getOfflineRouteAlternatives(
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        signal,
       );
     }
 
@@ -395,7 +405,6 @@ export class RoutingService {
     } catch (err) {
       if (
         err instanceof NoRouteFoundError ||
-        err instanceof InvalidRoutingResponseError ||
         (err &&
           typeof err === 'object' &&
           'name' in err &&
@@ -403,19 +412,40 @@ export class RoutingService {
       ) {
         return [];
       }
-      console.warn('Online route search failed:', err);
+      logger.warn('Routing', 'Online route search failed.', err);
       const networkReachable =
         connectivityService.getMode() === 'online'
           ? true
           : await connectivityService.verifyConnection();
       if (networkReachable) {
-        // Never replace a failed online driving route with an estimated
-        // route while the app is otherwise online.
-        return [];
+        // Never replace a failed online driving route with an estimated route
+        // while online, and preserve the service error for the UI.
+        throw err;
       }
     }
 
-    return normalizeAndSortRoutes(
+    return this.getOfflineRouteAlternatives(
+      startLat,
+      startLng,
+      endLat,
+      endLng,
+      signal,
+    );
+  }
+
+  private async getOfflineRouteAlternatives(
+    startLat: number,
+    startLng: number,
+    endLat: number,
+    endLng: number,
+    signal?: AbortSignal,
+  ): Promise<RouteDetails[]> {
+    await offlineMapManager.initialize();
+    offlineMapManager.assertNavigationCoverage(
+      { latitude: startLat, longitude: startLng },
+      { latitude: endLat, longitude: endLng },
+    );
+    const routes = normalizeAndSortRoutes(
       await this.offlineRepo.getRouteAlternatives(
         startLat,
         startLng,
@@ -424,6 +454,10 @@ export class RoutingService {
         signal,
       ),
     );
+    if (routes.length === 0) {
+      throw new OfflineRoutingUnavailableError();
+    }
+    return routes;
   }
 }
 

@@ -29,7 +29,7 @@ export const MAP_STYLES: Record<MapStylePreset, MapStyleConfig> = {
   },
   satellite: {
     id: 'satellite',
-    name: 'OpenFreeMap Liberty',
+    name: 'OpenFreeMap Liberty (street map)',
     url: 'https://tiles.openfreemap.org/styles/liberty',
     isVector: true,
   },

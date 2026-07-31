@@ -40,4 +40,24 @@ describe('rankingUtils', () => {
 
     expect(scoreCloseBranded).toBeGreaterThan(scoreFarGeneric);
   });
+
+  it('keeps the live user location ahead of the Hyderabad regional preference', () => {
+    const karachiUser = { latitude: 24.8607, longitude: 67.0011 };
+    const nearbyKarachi = calculateRankingScore({
+      title: 'Local Hospital',
+      latitude: 24.861,
+      longitude: 67.002,
+      userLocation: karachiUser,
+      query: 'hospital',
+    });
+    const hyderabadResult = calculateRankingScore({
+      title: 'Hyderabad Hospital',
+      latitude: 25.396,
+      longitude: 68.3578,
+      userLocation: karachiUser,
+      query: 'hospital',
+    });
+
+    expect(nearbyKarachi).toBeGreaterThan(hyderabadResult);
+  });
 });

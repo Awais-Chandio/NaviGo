@@ -1,4 +1,5 @@
 import voiceNavigationService from '../../src/services/VoiceNavigationService';
+import Tts from 'react-native-tts';
 
 describe('VoiceNavigationService', () => {
   beforeEach(() => {
@@ -13,9 +14,24 @@ describe('VoiceNavigationService', () => {
   });
 
   it('handles distance maneuver prompts', () => {
-    const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const spy = jest.spyOn(console, 'info').mockImplementation(() => {});
     voiceNavigationService.speakManeuverPrompt('Turn left onto Main St', 250);
-    expect(spy).toHaveBeenCalledWith('[Voice Navigation]:', expect.stringContaining('300 meters'));
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('300 meters'));
+    voiceNavigationService.speakManeuverPrompt('Turn left onto Main St', 250);
+    expect(spy).toHaveBeenCalledTimes(1);
     spy.mockRestore();
+  });
+
+  it('uses the initialized native TTS engine', async () => {
+    await Promise.resolve();
+    voiceNavigationService.speak('Continue straight', true);
+    expect(Tts.speak).toHaveBeenCalledWith(
+      'Continue straight',
+      expect.objectContaining({
+        androidParams: expect.objectContaining({
+          KEY_PARAM_STREAM: 'STREAM_MUSIC',
+        }),
+      }),
+    );
   });
 });

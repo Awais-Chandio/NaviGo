@@ -63,7 +63,10 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
       });
     }, 2200);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      pulseLoop.stop();
+    };
   }, [exitFadeAnim, fadeAnim, onFinish, pulseAnim, scaleAnim]);
 
   const logoSize = Math.min(width * 0.38, 120);
@@ -80,10 +83,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
         ]}
       >
         <Animated.View
-          style={[
-            styles.iconWrapper,
-            { transform: [{ scale: pulseAnim }] },
-          ]}
+          style={[styles.iconWrapper, { transform: [{ scale: pulseAnim }] }]}
         >
           <PersonPinCircle
             width={logoSize}
