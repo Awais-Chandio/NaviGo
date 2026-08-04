@@ -4,6 +4,7 @@ import {
   StatusBar,
   TouchableOpacity,
   AppState,
+  Alert,
   type NativeSyntheticEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -69,6 +70,9 @@ export default function MapScreen() {
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [isLoadingNearby, setIsLoadingNearby] = useState<boolean>(false);
   const [nearbyError, setNearbyError] = useState<string | null>(null);
+  const [savedPlaceSetupType, setSavedPlaceSetupType] = useState<
+    'home' | 'work' | null
+  >(null);
   const [selectedNearbyPlaceId, setSelectedNearbyPlaceId] = useState<
     string | null
   >(null);
@@ -81,6 +85,7 @@ export default function MapScreen() {
     routeDetails,
     isLoadingRoute,
     isRerouting,
+    travelMode,
     currentStep,
     distanceToStep,
     eta,
@@ -94,6 +99,7 @@ export default function MapScreen() {
     isMuted,
     selectDestination,
     selectRouteIndex,
+    selectTravelMode,
     startNavigation,
     cancelNavigation,
     toggleVoiceMute,
@@ -101,11 +107,18 @@ export default function MapScreen() {
   } = useNavigation();
 
   const isNavigating = navigationState === 'navigating';
-  const { location, detectedArea, locationError } = useLocation(isNavigating);
+  const {
+    location,
+    detectedArea,
+    detectedCity,
+    detectedCountryCode,
+    locationError,
+  } = useLocation(isNavigating);
   const hasValidLocationFix =
     location.accuracy > 0 &&
     location.accuracy <= LOCATION_CONFIG.GPS_ACCURACY_MAX_THRESHOLD_METERS;
-  const { recentSearches, savedPlaces, addRecentSearch } = useSavedPlaces();
+  const { recentSearches, savedPlaces, addRecentSearch, savePlace } =
+    useSavedPlaces();
 
   useEffect(() => {
     offlineMapManager.initialize().catch(error => {
@@ -423,7 +436,35 @@ export default function MapScreen() {
   );
 
   const handleSelectPlace = useCallback(
-    (item: SearchPlaceItem) => {
+    async (item: SearchPlaceItem) => {
+      if (savedPlaceSetupType) {
+        const label = savedPlaceSetupType === 'home' ? 'Home' : 'Work';
+        const address = item.subtitle?.trim() || item.displayName || item.title;
+        try {
+          addRecentSearch(item);
+          await savePlace({
+            id: savedPlaceSetupType,
+            name: label,
+            address,
+            latitude: item.latitude,
+            longitude: item.longitude,
+            type: savedPlaceSetupType,
+          });
+          setSavedPlaceSetupType(null);
+          setSelectedCategory(null);
+          setActiveCategoryConfig(null);
+          Alert.alert(`${label} Address Saved`, address);
+        } catch (error) {
+          logger.warn(
+            'SavedPlaces',
+            `Unable to save ${label} address.`,
+            error,
+          );
+          setErrorMessage(`Unable to save ${label.toLowerCase()} address.`);
+        }
+        return;
+      }
+
       if (!hasValidLocationFix) {
         setErrorMessage(
           'Wait for an accurate GPS fix before requesting a route.',
@@ -443,6 +484,8 @@ export default function MapScreen() {
       hasValidLocationFix,
       location.latitude,
       location.longitude,
+      savedPlaceSetupType,
+      savePlace,
       selectDestination,
     ],
   );
@@ -480,6 +523,7 @@ export default function MapScreen() {
         setActiveCategoryConfig(null);
         setNearbyPlaces([]);
         setSelectedNearbyPlaceId(null);
+        setSavedPlaceSetupType(null);
         return;
       }
 
@@ -489,6 +533,7 @@ export default function MapScreen() {
       setNearbyError(null);
       lastFetchedLocationRef.current = null;
       nearbyAbortRef.current?.abort();
+      setSavedPlaceSetupType(null);
 
       if (category.isSavedPlace && category.savedType) {
         setNearbyPlaces([]);
@@ -518,11 +563,8 @@ export default function MapScreen() {
           }
           setIsFollowingUser(false);
         } else {
-          setErrorMessage(
-            `${
-              category.title
-            } is not set. Save a ${category.title.toLowerCase()} location first.`,
-          );
+          setErrorMessage(null);
+          setSavedPlaceSetupType(category.savedType);
         }
       } else {
         setNearbyPlaces([]);
@@ -541,6 +583,12 @@ export default function MapScreen() {
     ],
   );
 
+  const handleCancelSavedPlaceSetup = useCallback(() => {
+    setSavedPlaceSetupType(null);
+    setSelectedCategory(null);
+    setActiveCategoryConfig(null);
+  }, []);
+
   const handleSelectNearbyPlace = useCallback((place: NearbyPlace) => {
     setSelectedNearbyPlaceId(place.id);
     if (cameraRef.current) {
@@ -551,6 +599,17 @@ export default function MapScreen() {
       });
     }
     setIsFollowingUser(false);
+  }, []);
+
+  const handleCloseNearbyCard = useCallback(() => {
+    setSelectedCategory(null);
+    setActiveCategoryConfig(null);
+    setNearbyPlaces([]);
+    setSelectedNearbyPlaceId(null);
+    setNearbyError(null);
+    setIsLoadingNearby(false);
+    nearbyAbortRef.current?.abort();
+    nearbyAbortRef.current = null;
   }, []);
 
   const handleNavigateToNearbyPlace = useCallback(
@@ -567,6 +626,7 @@ export default function MapScreen() {
         title: place.name,
         subtitle: place.address,
       });
+      handleCloseNearbyCard();
       if (cameraRef.current) {
         cameraRef.current.easeTo({
           center: [place.longitude, place.latitude],
@@ -577,23 +637,13 @@ export default function MapScreen() {
       setIsFollowingUser(false);
     },
     [
+      handleCloseNearbyCard,
       hasValidLocationFix,
       location.latitude,
       location.longitude,
       selectDestination,
     ],
   );
-
-  const handleCloseNearbyCard = useCallback(() => {
-    setSelectedCategory(null);
-    setActiveCategoryConfig(null);
-    setNearbyPlaces([]);
-    setSelectedNearbyPlaceId(null);
-    setNearbyError(null);
-    setIsLoadingNearby(false);
-    nearbyAbortRef.current?.abort();
-    nearbyAbortRef.current = null;
-  }, []);
 
   const handleResetCompass = useCallback(() => {
     if (cameraRef.current) {
@@ -687,7 +737,9 @@ export default function MapScreen() {
         savedPlaces={savedPlaces}
         categories={NEARBY_CATEGORIES}
         selectedCategory={selectedCategory}
+        savedPlaceSetupType={savedPlaceSetupType}
         onCategoryPress={handleCategoryPress}
+        onCancelSavedPlaceSetup={handleCancelSavedPlaceSetup}
         onSelectPlace={handleSelectPlace}
         onSelectSavedPlace={handleSelectSavedPlace}
       />
@@ -712,8 +764,9 @@ export default function MapScreen() {
             <TrafficLine
               coordinates={routeDetails.coordinates}
               visible={
-                navigationState === 'navigating' ||
-                navigationState === 'route_ready'
+                travelMode !== 'walking' &&
+                (navigationState === 'navigating' ||
+                  navigationState === 'route_ready')
               }
             />
           </>
@@ -802,7 +855,9 @@ export default function MapScreen() {
             routes={routes}
             selectedIndex={selectedRouteIndex}
             destinationTitle={destination.title}
+            travelMode={travelMode}
             onSelectRouteIndex={selectRouteIndex}
+            onSelectTravelMode={selectTravelMode}
             onStartNavigation={startNavigation}
             onCancel={cancelNavigation}
           />
@@ -817,6 +872,7 @@ export default function MapScreen() {
           formattedDistance={formattedRemainingDistance}
           formattedDuration={formattedRemainingDuration}
           eta={eta}
+          travelMode={travelMode}
           currentSpeed={currentSpeed}
           currentRoad={currentRoad}
           nextInstruction={nextInstruction}
@@ -838,6 +894,8 @@ export default function MapScreen() {
             : undefined
         }
         suggestedRegionName={detectedArea}
+        suggestedCityName={detectedCity}
+        suggestedCountryCode={detectedCountryCode}
         onClose={() => setIsOfflineMapsVisible(false)}
       />
     </SafeAreaView>

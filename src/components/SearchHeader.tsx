@@ -6,6 +6,7 @@ import {
   FlatList,
   Pressable,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { geocodingService } from '../services/geocodingService';
@@ -15,6 +16,7 @@ import { NavigationState } from '../hooks/useNavigation';
 import { SearchBar } from './SearchBar';
 import { NearbyCategoryBar } from './NearbyCategoryBar';
 import { NearbyCategory } from '../types/places';
+import { formatDistance } from '../utils/locationUtils';
 
 interface SearchHeaderProps {
   userLocation: { latitude: number; longitude: number };
@@ -23,7 +25,9 @@ interface SearchHeaderProps {
   savedPlaces: SavedPlace[];
   categories?: NearbyCategory[];
   selectedCategory?: string | null;
+  savedPlaceSetupType?: 'home' | 'work' | null;
   onCategoryPress?: (category: NearbyCategory) => void;
+  onCancelSavedPlaceSetup?: () => void;
   onSelectPlace: (item: SearchPlaceItem) => void;
   onSelectSavedPlace?: (place: SavedPlace) => void;
 }
@@ -37,6 +41,11 @@ const SearchResultCardItem = React.memo(({
   item: SearchPlaceItem;
   onPress: (item: SearchPlaceItem) => void;
 }) => {
+  const displayDistance =
+    typeof item.distanceMeters === 'number'
+      ? formatDistance(item.distanceMeters)
+      : item.formattedDistance;
+
   return (
     <Pressable
       onPress={() => onPress(item)}
@@ -66,11 +75,9 @@ const SearchResultCardItem = React.memo(({
         ) : null}
       </View>
 
-      {item.formattedDistance && (
+      {displayDistance && (
         <View style={styles.distanceBadge}>
-          <Text style={styles.distanceBadgeText}>
-            {item.formattedDistance}
-          </Text>
+          <Text style={styles.distanceBadgeText}>{displayDistance}</Text>
         </View>
       )}
     </Pressable>
@@ -83,7 +90,9 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   recentSearches,
   categories,
   selectedCategory = null,
+  savedPlaceSetupType = null,
   onCategoryPress,
+  onCancelSavedPlaceSetup,
   onSelectPlace,
 }) => {
   const insets = useSafeAreaInsets();
@@ -96,6 +105,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  const previousSetupTypeRef = useRef<'home' | 'work' | null>(null);
   const userLatitude = userLocation.latitude;
   const userLongitude = userLocation.longitude;
 
@@ -109,6 +119,19 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (previousSetupTypeRef.current !== savedPlaceSetupType) {
+      setSearchText('');
+      setSearchResults([]);
+      setIsSearching(false);
+      setHasSearched(false);
+      setSearchError(null);
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
+    }
+    previousSetupTypeRef.current = savedPlaceSetupType;
+  }, [savedPlaceSetupType]);
 
   const executeSearch = useCallback(async (text: string) => {
     if (searchAbortRef.current) {
@@ -187,6 +210,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   }, [executeSearch]);
 
   const handleSelectItem = useCallback((item: SearchPlaceItem) => {
+    Keyboard.dismiss();
     setSearchText(item.title);
     setSearchResults([]);
     setIsFocused(false);
@@ -227,16 +251,41 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       {/* Search Input Bar */}
       <SearchBar
         value={searchText}
-        placeholder="Search destination, fuel, food, atm..."
+        placeholder={
+          savedPlaceSetupType
+            ? `Search ${savedPlaceSetupType === 'home' ? 'Home' : 'Work'} address...`
+            : 'Search destination, fuel, food, atm...'
+        }
         isLoading={isSearching}
+        focusRequestKey={savedPlaceSetupType}
         onChangeText={handleTextChange}
         onClear={handleClearText}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
       />
 
+      {savedPlaceSetupType && (
+        <View style={styles.savedPlaceSetupBanner}>
+          <Text style={styles.savedPlaceSetupText}>
+            Search and select your{' '}
+            {savedPlaceSetupType === 'home' ? 'Home' : 'Work'} address
+          </Text>
+          <Pressable
+            onPress={onCancelSavedPlaceSetup}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel address setup"
+            hitSlop={8}
+          >
+            <Text style={styles.savedPlaceSetupCancel}>Cancel</Text>
+          </Pressable>
+        </View>
+      )}
+
       {/* Category Chips Row */}
-      {searchText.length === 0 && categories && onCategoryPress && (
+      {searchText.length === 0 &&
+        !savedPlaceSetupType &&
+        categories &&
+        onCategoryPress && (
         <View style={styles.categoryBarWrapper}>
           <NearbyCategoryBar
             categories={categories}
@@ -314,6 +363,28 @@ const styles = StyleSheet.create({
   },
   categoryBarWrapper: {
     marginTop: 8,
+  },
+  savedPlaceSetupBanner: {
+    marginTop: 8,
+    minHeight: 40,
+    borderRadius: 12,
+    backgroundColor: '#E8F0FE',
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  savedPlaceSetupText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#174EA6',
+  },
+  savedPlaceSetupCancel: {
+    marginLeft: 10,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#D93025',
   },
   suggestionsContainer: {
     maxHeight: 320,

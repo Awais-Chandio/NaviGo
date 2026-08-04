@@ -1,3 +1,5 @@
+import { TRAVEL_MODE_CONFIG, type TravelMode } from '../config/travelModes';
+
 export function getHaversineDistance(
   lat1: number,
   lon1: number,
@@ -112,9 +114,9 @@ export function getDistanceFromPointToLineSegment(
   bLat: number,
   bLng: number,
 ): number {
-  return getClosestPointOnSegment(pLat, pLng, aLat, aLng, bLat, bLng).distanceMeters;
+  return getClosestPointOnSegment(pLat, pLng, aLat, aLng, bLat, bLng)
+    .distanceMeters;
 }
-
 
 export function getDistanceToRoute(
   userLat: number,
@@ -301,7 +303,10 @@ export function findClosestPointOnRoute(
   }
 
   const finalSegmentIndex = routeCoordinates.length - 2;
-  const startIndex = Math.max(0, Math.min(finalSegmentIndex, startSegmentIndex));
+  const startIndex = Math.max(
+    0,
+    Math.min(finalSegmentIndex, startSegmentIndex),
+  );
   const endIndex = Math.max(
     startIndex,
     Math.min(finalSegmentIndex, endSegmentIndex),
@@ -387,7 +392,10 @@ export function getPointAtRouteDistance(
     segmentDistance > 0
       ? Math.max(
           0,
-          Math.min(1, (clampedDistance - segmentStartDistance) / segmentDistance),
+          Math.min(
+            1,
+            (clampedDistance - segmentStartDistance) / segmentDistance,
+          ),
         )
       : 0;
   const [startLng, startLat] = routeCoordinates[segmentIndex];
@@ -477,10 +485,7 @@ export function calculateRouteProgress(
   const minimumDistance = Math.max(0, options.minimumDistanceTraveled ?? 0);
   const maximumDistance = Math.min(
     routeDistance,
-    Math.max(
-      minimumDistance,
-      options.maximumDistanceTraveled ?? routeDistance,
-    ),
+    Math.max(minimumDistance, options.maximumDistanceTraveled ?? routeDistance),
   );
   const distanceTraveled = Math.max(
     minimumDistance,
@@ -493,10 +498,7 @@ export function calculateRouteProgress(
   );
   const progressPct = Math.min(
     100,
-    Math.max(
-      0,
-      Number(((distanceTraveled / routeDistance) * 100).toFixed(1)),
-    ),
+    Math.max(0, Number(((distanceTraveled / routeDistance) * 100).toFixed(1))),
   );
 
   return {
@@ -525,17 +527,19 @@ export function calculateDynamicETA(
   currentSpeedKmH: number | null | undefined,
   initialRouteDistanceMeters: number,
   initialRouteDurationSeconds: number,
+  travelMode: TravelMode = 'driving',
 ): DynamicETAResult {
+  const modeConfig = TRAVEL_MODE_CONFIG[travelMode];
   const safeRemainingDistance = Math.max(0, remainingDistanceMeters);
   const baselineSpeedMetersPerSec =
     initialRouteDistanceMeters > 0 && initialRouteDurationSeconds > 0
       ? initialRouteDistanceMeters / initialRouteDurationSeconds
-      : 8.33;
+      : modeConfig.baselineSpeedKmH / 3.6;
   const hasUsableGpsSpeed =
     typeof currentSpeedKmH === 'number' &&
     Number.isFinite(currentSpeedKmH) &&
-    currentSpeedKmH >= 3 &&
-    currentSpeedKmH <= 220;
+    currentSpeedKmH >= modeConfig.minimumGpsSpeedKmH &&
+    currentSpeedKmH <= modeConfig.maximumGpsSpeedKmH;
 
   let effectiveSpeedMetersPerSec = baselineSpeedMetersPerSec;
   if (hasUsableGpsSpeed) {

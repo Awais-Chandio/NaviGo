@@ -9,6 +9,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { NearbyPlace } from '../types/places';
+import { formatDistance } from '../utils/locationUtils';
 
 interface NearbyPlacesCardProps {
   categoryTitle: string;
@@ -47,7 +48,7 @@ const NearbyPlaceItemCard = React.memo(({
           {item.name}
         </Text>
         <Text style={styles.distanceText}>
-          {item.formattedDistance ? `${item.formattedDistance} away` : `${item.distance}m away`}
+          {formatDistance(item.distance)} away
         </Text>
         {!!item.address && (
           <Text style={styles.addressText} numberOfLines={1}>

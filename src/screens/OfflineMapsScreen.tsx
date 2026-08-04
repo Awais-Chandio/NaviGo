@@ -29,11 +29,17 @@ import { OfflineMapCard } from '../components/OfflineMapCard';
 import { OfflineCoverageMap } from '../components/OfflineCoverageMap';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { logger } from '../utils/logger';
+import {
+  cityMapService,
+  type CityDownloadPlan,
+} from '../services/cityMapService';
 
 interface OfflineMapsScreenProps {
   visible: boolean;
   userLocation?: OfflineRegionCenter;
   suggestedRegionName?: string;
+  suggestedCityName?: string;
+  suggestedCountryCode?: string;
   onClose: () => void;
 }
 
@@ -54,6 +60,8 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
   visible,
   userLocation,
   suggestedRegionName,
+  suggestedCityName,
+  suggestedCountryCode,
   onClose,
 }) => {
   const [regions, setRegions] = useState<OfflineRegion[]>([]);
@@ -66,6 +74,7 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
     regionCount: 0,
   });
   const [isClearingCache, setIsClearingCache] = useState(false);
+  const [isPreparingCity, setIsPreparingCity] = useState(false);
   const isMountedRef = useRef(true);
   const cacheClearInFlightRef = useRef(false);
   const listRef = useRef<FlatList<OfflineRegion>>(null);
@@ -282,6 +291,133 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
     userLocation,
   ]);
 
+  const handleCreateCityRegion = useCallback(
+    async (plan: CityDownloadPlan) => {
+      try {
+        const newRegion = await offlineMapManager.createRegionAroundPoint({
+          name: plan.name,
+          center: plan.center,
+          radiusKm: plan.radiusKm,
+          minZoom: 9,
+          maxZoom: 16,
+        });
+        handleSelectRegion(newRegion.id);
+        await loadRegions();
+        handleDownload(newRegion.id);
+      } catch (error) {
+        if (error instanceof DuplicateOfflineRegionError) {
+          handleSelectRegion(error.regionId);
+          const existingRegion = offlineMapManager.getRegion(error.regionId);
+          Alert.alert(
+            existingRegion?.status === 'completed'
+              ? 'City Already Downloaded'
+              : 'City Download Already Exists',
+            existingRegion?.status === 'completed'
+              ? `${existingRegion.name} is already ready for offline use.`
+              : `${
+                  existingRegion?.name ?? 'This city map'
+                } already exists. Use its Download or Retry button instead.`,
+          );
+          return;
+        }
+        logger.warn('OfflineMaps', 'Unable to create city map region.', error);
+        Alert.alert(
+          'City Map Error',
+          error instanceof Error
+            ? error.message
+            : 'Unable to create the city map download.',
+        );
+      } finally {
+        if (isMountedRef.current) {
+          setIsPreparingCity(false);
+        }
+      }
+    },
+    [handleDownload, handleSelectRegion, loadRegions],
+  );
+
+  const handleDownloadCity = useCallback(async () => {
+    if (!userLocation || isPreparingCity) {
+      if (!userLocation) {
+        Alert.alert(
+          'GPS Unavailable',
+          'Wait for an accurate GPS fix before downloading a city map.',
+        );
+      }
+      return;
+    }
+
+    setIsPreparingCity(true);
+    try {
+      const plan = await cityMapService.resolveDownloadPlan({
+        cityName: suggestedCityName,
+        countryCode: suggestedCountryCode,
+        userLocation,
+      });
+      const estimate = offlineMapManager.estimateRegionDownload(
+        plan.center,
+        plan.radiusKm,
+        9,
+        16,
+      );
+      const coverageDescription = plan.usedFallback
+        ? `${plan.radiusKm.toFixed(0)} km around the city center`
+        : `the detected city boundary with a ${plan.radiusKm.toFixed(
+            1,
+          )} km guaranteed coverage radius`;
+
+      Alert.alert(
+        `Download ${plan.name}?`,
+        `This covers ${coverageDescription}. Estimated download: ${formatBytes(
+          estimate.estimatedSizeBytes,
+        )}. Wi-Fi is recommended.`,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => setIsPreparingCity(false),
+          },
+          {
+            text: 'Download',
+            onPress: () => {
+              handleCreateCityRegion(plan).catch(error => {
+                logger.warn(
+                  'OfflineMaps',
+                  'Unexpected city download setup failure.',
+                  error,
+                );
+                if (isMountedRef.current) {
+                  setIsPreparingCity(false);
+                }
+              });
+            },
+          },
+        ],
+        {
+          cancelable: true,
+          onDismiss: () => setIsPreparingCity(false),
+        },
+      );
+    } catch (error) {
+      logger.warn('OfflineMaps', 'City boundary lookup failed.', error);
+      Alert.alert(
+        'City Map Unavailable',
+        error instanceof Error
+          ? error.message
+          : 'Unable to identify the complete city boundary.',
+      );
+      if (isMountedRef.current) {
+        setIsPreparingCity(false);
+      }
+    }
+  }, [
+    handleCreateCityRegion,
+    isPreparingCity,
+    suggestedCityName,
+    suggestedCountryCode,
+    userLocation,
+  ]);
+
   const handleClearCache = useCallback(async () => {
     if (cacheClearInFlightRef.current) return;
     cacheClearInFlightRef.current = true;
@@ -351,20 +487,41 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
           </Text>
         </View>
 
-        <TouchableOpacity
-          style={[
-            styles.downloadCurrentButton,
-            !userLocation && styles.downloadCurrentButtonDisabled,
-          ]}
-          onPress={handleDownloadCurrentRegion}
-          disabled={!userLocation}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.downloadCurrentText}>
-            Download Current {LOCATION_CONFIG.DEFAULT_OFFLINE_REGION_RADIUS_KM}{' '}
-            km Area
-          </Text>
-        </TouchableOpacity>
+        <View style={styles.downloadActions}>
+          <TouchableOpacity
+            style={[
+              styles.downloadCityButton,
+              (!userLocation || isPreparingCity) &&
+                styles.downloadCurrentButtonDisabled,
+            ]}
+            onPress={handleDownloadCity}
+            disabled={!userLocation || isPreparingCity}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.downloadCurrentText}>
+              {isPreparingCity
+                ? 'Preparing City Map…'
+                : suggestedCityName
+                ? `Download ${suggestedCityName} City`
+                : 'Download Whole City'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.downloadCurrentButton,
+              !userLocation && styles.downloadAreaButtonDisabled,
+            ]}
+            onPress={handleDownloadCurrentRegion}
+            disabled={!userLocation}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.downloadAreaText}>
+              Download Current{' '}
+              {LOCATION_CONFIG.DEFAULT_OFFLINE_REGION_RADIUS_KM} km Area
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {selectedRegion && (
@@ -571,6 +728,14 @@ const styles = StyleSheet.create({
     color: '#5F6368',
   },
   downloadCurrentButton: {
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#1A73E8',
+  },
+  downloadCityButton: {
     backgroundColor: '#1A73E8',
     paddingVertical: 11,
     borderRadius: 12,
@@ -579,8 +744,19 @@ const styles = StyleSheet.create({
   downloadCurrentButtonDisabled: {
     backgroundColor: '#BDC1C6',
   },
+  downloadAreaButtonDisabled: {
+    borderColor: '#BDC1C6',
+  },
+  downloadActions: {
+    gap: 8,
+  },
   downloadCurrentText: {
     color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  downloadAreaText: {
+    color: '#1A73E8',
     fontSize: 13,
     fontWeight: '700',
   },

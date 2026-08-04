@@ -7,27 +7,40 @@ import {
   ScrollView,
 } from 'react-native';
 import { RouteDetails } from '../services/routingService';
+import {
+  getTravelModeEstimateLabel,
+  TRAVEL_MODE_CONFIG,
+  TRAVEL_MODES,
+  type TravelMode,
+} from '../config/travelModes';
 
 interface RouteAlternativesCardProps {
   routes: RouteDetails[];
   selectedIndex: number;
   destinationTitle: string;
+  travelMode: TravelMode;
   onSelectRouteIndex: (index: number) => void;
+  onSelectTravelMode: (mode: TravelMode) => void;
   onStartNavigation: () => void;
   onCancel: () => void;
 }
 
-export const RouteAlternativesCardComponent: React.FC<RouteAlternativesCardProps> = ({
+export const RouteAlternativesCardComponent: React.FC<
+  RouteAlternativesCardProps
+> = ({
   routes,
   selectedIndex,
   destinationTitle,
+  travelMode,
   onSelectRouteIndex,
+  onSelectTravelMode,
   onStartNavigation,
   onCancel,
 }) => {
   if (!routes || routes.length === 0) return null;
 
   const activeRoute = routes[selectedIndex] || routes[0];
+  const activeMode = TRAVEL_MODE_CONFIG[travelMode];
 
   return (
     <View style={styles.cardContainer}>
@@ -51,6 +64,44 @@ export const RouteAlternativesCardComponent: React.FC<RouteAlternativesCardProps
         </TouchableOpacity>
       </View>
 
+      <View style={styles.modeSection}>
+        <Text style={styles.modeSectionLabel}>ETA mode</Text>
+        <View style={styles.modeRow}>
+          {TRAVEL_MODES.map(mode => {
+            const config = TRAVEL_MODE_CONFIG[mode];
+            const isSelected = mode === travelMode;
+            return (
+              <TouchableOpacity
+                key={mode}
+                style={[
+                  styles.modeButton,
+                  isSelected && styles.selectedModeButton,
+                ]}
+                onPress={() => onSelectTravelMode(mode)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                accessibilityLabel={`${config.label} ETA mode`}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modeIcon}>{config.icon}</Text>
+                <Text
+                  style={[
+                    styles.modeLabel,
+                    isSelected && styles.selectedModeLabel,
+                  ]}
+                >
+                  {config.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        <Text style={styles.modeEstimateText}>
+          {activeMode.icon} {activeMode.label} •{' '}
+          {getTravelModeEstimateLabel(travelMode)} • adjusts with live GPS speed
+        </Text>
+      </View>
+
       {/* Alternative Route Selectors */}
       <ScrollView
         horizontal
@@ -60,7 +111,11 @@ export const RouteAlternativesCardComponent: React.FC<RouteAlternativesCardProps
         {routes.map((rt, idx) => {
           const isSelected = selectedIndex === idx;
           const badgeColor =
-            rt.tag === 'Fastest' ? '#1E8E3E' : rt.tag === 'Shortest' ? '#1A73E8' : '#F9AB00';
+            rt.tag === 'Fastest'
+              ? '#1E8E3E'
+              : rt.tag === 'Shortest'
+              ? '#1A73E8'
+              : '#F9AB00';
 
           return (
             <TouchableOpacity
@@ -73,9 +128,13 @@ export const RouteAlternativesCardComponent: React.FC<RouteAlternativesCardProps
               activeOpacity={0.8}
             >
               <View style={[styles.badge, { backgroundColor: badgeColor }]}>
-                <Text style={styles.badgeText}>{rt.tag || `Route ${idx + 1}`}</Text>
+                <Text style={styles.badgeText}>
+                  {rt.tag || `Route ${idx + 1}`}
+                </Text>
               </View>
-              <Text style={[styles.pillTime, isSelected && styles.selectedPillText]}>
+              <Text
+                style={[styles.pillTime, isSelected && styles.selectedPillText]}
+              >
                 {rt.formattedDuration}
               </Text>
               <Text style={styles.pillDist}>{rt.formattedDistance}</Text>
@@ -89,7 +148,9 @@ export const RouteAlternativesCardComponent: React.FC<RouteAlternativesCardProps
         onPress={onStartNavigation}
         activeOpacity={0.85}
       >
-        <Text style={styles.startBtnText}>Start Navigation</Text>
+        <Text style={styles.startBtnText}>
+          Start {activeMode.label} Navigation
+        </Text>
       </TouchableOpacity>
     </View>
   );
@@ -142,6 +203,52 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#5F6368',
     fontWeight: 'bold',
+  },
+  modeSection: {
+    marginBottom: 8,
+  },
+  modeSectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#5F6368',
+    marginBottom: 6,
+  },
+  modeRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  modeButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: '#F1F3F4',
+    borderWidth: 1,
+    borderColor: '#DADCE0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  selectedModeButton: {
+    backgroundColor: '#E8F0FE',
+    borderColor: '#1A73E8',
+    borderWidth: 2,
+  },
+  modeIcon: {
+    fontSize: 16,
+  },
+  modeLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#5F6368',
+  },
+  selectedModeLabel: {
+    color: '#174EA6',
+  },
+  modeEstimateText: {
+    fontSize: 11,
+    color: '#5F6368',
+    marginTop: 6,
   },
   routesScroll: {
     paddingVertical: 6,

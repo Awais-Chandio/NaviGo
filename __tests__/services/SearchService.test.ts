@@ -1,6 +1,16 @@
 import { searchService } from '../../src/services/searchService';
+import { normalizeDetectedCity } from '../../src/repositories/SearchRepository';
 
 describe('SearchService', () => {
+  it('normalizes a taluka result to its parent city district', () => {
+    expect(normalizeDetectedCity('Latifabad Taluka', 'Hyderabad District')).toBe(
+      'Hyderabad',
+    );
+    expect(normalizeDetectedCity('Hyderabad', 'Hyderabad District')).toBe(
+      'Hyderabad',
+    );
+  });
+
   it('returns empty array when query length is less than 2 characters', async () => {
     const results = await searchService.search('a');
     expect(results).toEqual([]);

@@ -12,11 +12,31 @@ export interface ConnectivityState {
 
 export type ConnectivityListener = (state: ConnectivityState) => void;
 
-class ConnectivityService {
+const CONNECTIVITY_PROBES: ReadonlyArray<{
+  url: string;
+  method: 'GET' | 'HEAD';
+}> = [
+  {
+    url: 'https://clients3.google.com/generate_204',
+    method: 'GET',
+  },
+  {
+    // Check a service the app actually depends on as well. Google can be
+    // blocked on otherwise-working networks, which must not force NaviGo into
+    // a false offline state.
+    url: 'https://tiles.openfreemap.org/styles/bright',
+    method: 'HEAD',
+  },
+];
+
+const CONNECTIVITY_TIMEOUT_MS = 4000;
+
+export class ConnectivityService {
   private mode: ConnectivityMode = 'auto';
   private isOnline: boolean = true;
   private networkType: NetworkType = 'unknown';
   private listeners: Set<ConnectivityListener> = new Set();
+  private verificationInFlight: Promise<boolean> | null = null;
 
   public async verifyConnection(): Promise<boolean> {
     if (this.mode === 'offline') {
@@ -29,23 +49,61 @@ class ConnectivityService {
       return true;
     }
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+    if (this.verificationInFlight) {
+      return this.verificationInFlight;
+    }
 
-      const response = await fetch('https://clients3.google.com/generate_204', {
-        method: 'GET',
-        signal: controller.signal,
-      }).catch(() => null);
-
-      clearTimeout(timeoutId);
-
-      const reachable = !!(response && (response.status === 204 || response.ok));
-      this.updateState(reachable, reachable ? 'unknown' : 'none');
+    const verification = this.checkReachability().then(reachable => {
+      // A manual mode change supersedes an older automatic probe.
+      if (this.mode === 'auto' && this.verificationInFlight === verification) {
+        this.updateState(reachable, reachable ? 'unknown' : 'none');
+      }
       return reachable;
+    });
+
+    this.verificationInFlight = verification;
+
+    try {
+      return await verification;
+    } finally {
+      if (this.verificationInFlight === verification) {
+        this.verificationInFlight = null;
+      }
+    }
+  }
+
+  private async checkReachability(): Promise<boolean> {
+    const results = await Promise.all(
+      CONNECTIVITY_PROBES.map(({ url, method }) =>
+        this.probeEndpoint(url, method),
+      ),
+    );
+    return results.some(Boolean);
+  }
+
+  private async probeEndpoint(
+    url: string,
+    method: 'GET' | 'HEAD',
+  ): Promise<boolean> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      CONNECTIVITY_TIMEOUT_MS,
+    );
+
+    try {
+      // Any HTTP response proves that the network is reachable. Individual
+      // feature requests still handle service-specific 4xx/5xx responses.
+      await fetch(url, {
+        method,
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      return true;
     } catch {
-      this.updateState(false, 'none');
       return false;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -68,6 +126,7 @@ class ConnectivityService {
 
   public setMode(mode: ConnectivityMode) {
     this.mode = mode;
+    this.verificationInFlight = null;
     this.verifyConnection().catch(error => {
       logger.warn('Connectivity', 'Connectivity verification failed.', error);
     });

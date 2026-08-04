@@ -25,6 +25,8 @@ describe('locationUtils', () => {
 
   test('formatDistance formats meters and kilometers', () => {
     expect(formatDistance(450)).toBe('450 m');
+    expect(formatDistance(999)).toBe('999 m');
+    expect(formatDistance(1000)).toBe('1.0 km');
     expect(formatDistance(2500)).toBe('2.5 km');
   });
 
@@ -45,11 +47,11 @@ describe('locationUtils', () => {
 
   test('calculateRouteProgress calculates progress %, distance traveled, and remaining distance', () => {
     const coords: [number, number][] = [
-      [68.3578, 25.3960],
-      [68.3590, 25.3970],
-      [68.3610, 25.3990],
+      [68.3578, 25.396],
+      [68.359, 25.397],
+      [68.361, 25.399],
     ];
-    const res = calculateRouteProgress(25.3960, 68.3578, coords);
+    const res = calculateRouteProgress(25.396, 68.3578, coords);
     expect(res.progressPct).toBe(0);
     expect(res.distanceTraveled).toBe(0);
     expect(res.remainingDistance).toBeGreaterThan(0);
@@ -113,9 +115,27 @@ describe('locationUtils', () => {
     expect(etaRes.effectiveSpeedKmH).toBe(30);
   });
 
+  test('calculateDynamicETA respects walking and bike live-speed ranges', () => {
+    const walking = calculateDynamicETA(1000, 80, 1000, 720, 'walking');
+    const motorbike = calculateDynamicETA(
+      1000,
+      50,
+      1000,
+      Math.round(1000 / (35 / 3.6)),
+      'motorbike',
+    );
+
+    // A vehicle-like GPS speed must not corrupt a walking ETA.
+    expect(walking.remainingDurationSeconds).toBe(720);
+    expect(walking.effectiveSpeedKmH).toBe(5);
+    // A valid live bike speed should shorten the 35 km/h baseline estimate.
+    expect(motorbike.effectiveSpeedKmH).toBeGreaterThan(35);
+    expect(motorbike.remainingDurationSeconds).toBeLessThan(103);
+  });
+
   test('isGPSJump detects sudden impossible location jumps', () => {
     const now = Date.now();
-    const isJump = isGPSJump(25.3960, 68.3578, now, 25.5000, 68.5000, now + 500); // ~15km in 0.5s
+    const isJump = isGPSJump(25.396, 68.3578, now, 25.5, 68.5, now + 500); // ~15km in 0.5s
     expect(isJump).toBe(true);
   });
 });

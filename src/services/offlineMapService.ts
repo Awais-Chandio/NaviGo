@@ -69,6 +69,12 @@ export interface CreateOfflineRegionOptions {
   maxZoom?: number;
 }
 
+export interface OfflineRegionDownloadEstimate {
+  bounds: RegionBoundingBox;
+  estimatedTileCount: number;
+  estimatedSizeBytes: number;
+}
+
 export class OfflineMapManager {
   private regionsMap: Map<string, OfflineRegion> = new Map();
   private isInitialized: boolean = false;
@@ -831,6 +837,22 @@ export class OfflineMapManager {
     ) {
       throw new Error('Offline zoom range must be between 0 and 20.');
     }
+  }
+
+  public estimateRegionDownload(
+    center: OfflineRegionCenter,
+    radiusKm: number,
+    minZoom: number = 10,
+    maxZoom: number = 16,
+  ): OfflineRegionDownloadEstimate {
+    this.validateZoomRange(minZoom, maxZoom);
+    const bounds = this.getBoundsForCoverage(center, radiusKm);
+    const estimatedTileCount = this.estimateTileCount(bounds, minZoom, maxZoom);
+    return {
+      bounds,
+      estimatedTileCount,
+      estimatedSizeBytes: 5 * 1024 * 1024 + estimatedTileCount * 60 * 1024,
+    };
   }
 
   private async createRegionRecord(

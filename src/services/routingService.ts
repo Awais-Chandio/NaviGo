@@ -7,9 +7,8 @@ import {
 } from '../repositories/RoutingRepository';
 import { connectivityService } from './connectivityService';
 import { logger } from '../utils/logger';
-import {
-  offlineMapManager,
-} from './offlineMapService';
+import { offlineMapManager } from './offlineMapService';
+import { TRAVEL_MODE_CONFIG, type TravelMode } from '../config/travelModes';
 
 export class OfflineRoutingUnavailableError extends Error {
   constructor(
@@ -72,6 +71,8 @@ export interface RouteDetails {
   coordinates: [number, number][];
   distanceMeters: number;
   durationSeconds: number;
+  drivingDurationSeconds?: number;
+  travelMode?: TravelMode;
   formattedDistance: string;
   formattedDuration: string;
   steps: NavigationStep[];
@@ -102,7 +103,9 @@ export interface RoutingProvider {
   ): Promise<RouteDetails[]>;
 }
 
-function isValidRouteCoordinate(coordinate: unknown): coordinate is [number, number] {
+function isValidRouteCoordinate(
+  coordinate: unknown,
+): coordinate is [number, number] {
   return (
     Array.isArray(coordinate) &&
     coordinate.length >= 2 &&
@@ -149,6 +152,8 @@ export function normalizeAndSortRoutes(routes: unknown): RouteDetails[] {
         ),
         distanceMeters,
         durationSeconds,
+        drivingDurationSeconds: route.drivingDurationSeconds ?? durationSeconds,
+        travelMode: route.travelMode ?? 'driving',
         formattedDistance: formatDistance(distanceMeters),
         formattedDuration: formatDuration(durationSeconds),
         steps: route.steps,
@@ -171,12 +176,66 @@ export function normalizeAndSortRoutes(routes: unknown): RouteDetails[] {
       index === 0
         ? 'Fastest'
         : route.distanceMeters === shortestDistance
-          ? 'Shortest'
-          : 'Alternative';
+        ? 'Shortest'
+        : 'Alternative';
     return {
       ...route,
       tag,
       name: route.name || `Route ${index + 1} (${tag})`,
+    };
+  });
+}
+
+export function applyTravelModeToRoutes(
+  routes: RouteDetails[],
+  travelMode: TravelMode,
+): RouteDetails[] {
+  const modeConfig = TRAVEL_MODE_CONFIG[travelMode];
+  const converted = routes
+    .filter(isValidRouteDetails)
+    .map(route => {
+      const drivingDurationSeconds = Math.max(
+        1,
+        Math.round(route.drivingDurationSeconds ?? route.durationSeconds),
+      );
+      const durationSeconds = modeConfig.usesRoadDuration
+        ? drivingDurationSeconds
+        : Math.max(
+            1,
+            Math.round(
+              route.distanceMeters / (modeConfig.baselineSpeedKmH / 3.6),
+            ),
+          );
+      return {
+        ...route,
+        drivingDurationSeconds,
+        travelMode,
+        durationSeconds,
+        formattedDuration: formatDuration(durationSeconds),
+      };
+    })
+    .sort((first, second) => {
+      if (first.durationSeconds !== second.durationSeconds) {
+        return first.durationSeconds - second.durationSeconds;
+      }
+      return first.distanceMeters - second.distanceMeters;
+    });
+
+  const shortestDistance = converted.reduce(
+    (minimum, route) => Math.min(minimum, route.distanceMeters),
+    Infinity,
+  );
+  return converted.map((route, index) => {
+    const tag: RouteDetails['tag'] =
+      index === 0
+        ? 'Fastest'
+        : route.distanceMeters === shortestDistance
+        ? 'Shortest'
+        : 'Alternative';
+    return {
+      ...route,
+      tag,
+      name: `Route ${index + 1} (${tag})`,
     };
   });
 }
@@ -205,9 +264,7 @@ function parseLaneInstructions(
   if (!laneData) return undefined;
 
   const lanes = laneData.map(lane => {
-    const indications = Array.isArray(lane.indications)
-      ? lane.indications
-      : [];
+    const indications = Array.isArray(lane.indications) ? lane.indications : [];
     const indication =
       indications.find(value => value.includes('left')) ||
       indications.find(value => value.includes('right')) ||
@@ -222,8 +279,7 @@ function parseLaneInstructions(
 
   return {
     lanes,
-    recommendedLaneIndex:
-      recommendedIndex >= 0 ? recommendedIndex : undefined,
+    recommendedLaneIndex: recommendedIndex >= 0 ? recommendedIndex : undefined,
   };
 }
 
@@ -246,45 +302,51 @@ export function parseOSRMSteps(rawSteps: OSRMStep[]): NavigationStep[] {
         step.duration >= 0,
     )
     .map(step => {
-    const type = step.maneuver?.type || 'straight';
-    const modifier = step.maneuver?.modifier || '';
-    const streetName = step.name ? ` onto ${step.name}` : '';
-    const location = step.maneuver?.location;
+      const type = step.maneuver?.type || 'straight';
+      const modifier = step.maneuver?.modifier || '';
+      const streetName = step.name ? ` onto ${step.name}` : '';
+      const location = step.maneuver?.location;
 
-    let instruction = 'Continue straight';
+      let instruction = 'Continue straight';
 
-    if (type === 'depart') {
-      instruction = `Start navigation${step.name ? ' - Head onto ' + step.name : ''}`.trim();
-    } else if (type === 'arrive') {
-      instruction = 'You have arrived at your destination';
-    } else if (type === 'turn') {
-      if (modifier.includes('right')) {
-        instruction = `Turn right${streetName}`.trim();
-      } else if (modifier.includes('left')) {
-        instruction = `Turn left${streetName}`.trim();
+      if (type === 'depart') {
+        instruction = `Start navigation${
+          step.name ? ' - Head onto ' + step.name : ''
+        }`.trim();
+      } else if (type === 'arrive') {
+        instruction = 'You have arrived at your destination';
+      } else if (type === 'turn') {
+        if (modifier.includes('right')) {
+          instruction = `Turn right${streetName}`.trim();
+        } else if (modifier.includes('left')) {
+          instruction = `Turn left${streetName}`.trim();
+        } else {
+          instruction = `Turn ${modifier}${streetName}`.trim();
+        }
+      } else if (
+        type === 'new name' ||
+        type === 'continue' ||
+        type === 'straight'
+      ) {
+        instruction = `Continue straight${streetName}`.trim();
+      } else if (type === 'roundabout' || type === 'rotary') {
+        const exitText =
+          typeof step.maneuver.exit === 'number'
+            ? ` and take exit ${step.maneuver.exit}`
+            : '';
+        instruction = `Enter the roundabout${exitText}${streetName}`.trim();
+      } else if (type === 'merge') {
+        instruction = `Merge ${modifier}${streetName}`.trim();
+      } else if (type === 'fork') {
+        instruction = `Keep ${modifier} at fork${streetName}`.trim();
       } else {
-        instruction = `Turn ${modifier}${streetName}`.trim();
+        instruction = `${type} ${modifier}${streetName}`.trim();
       }
-    } else if (type === 'new name' || type === 'continue' || type === 'straight') {
-      instruction = `Continue straight${streetName}`.trim();
-    } else if (type === 'roundabout' || type === 'rotary') {
-      const exitText =
-        typeof step.maneuver.exit === 'number'
-          ? ` and take exit ${step.maneuver.exit}`
-          : '';
-      instruction = `Enter the roundabout${exitText}${streetName}`.trim();
-    } else if (type === 'merge') {
-      instruction = `Merge ${modifier}${streetName}`.trim();
-    } else if (type === 'fork') {
-      instruction = `Keep ${modifier} at fork${streetName}`.trim();
-    } else {
-      instruction = `${type} ${modifier}${streetName}`.trim();
-    }
 
-    const distance = Math.round(step.distance || 0);
-    const duration = Math.round(step.duration || 0);
+      const distance = Math.round(step.distance || 0);
+      const duration = Math.round(step.duration || 0);
 
-    const lanes = parseLaneInstructions(step.intersections);
+      const lanes = parseLaneInstructions(step.intersections);
 
       return {
         instruction: instruction || 'Continue along route',
@@ -322,7 +384,13 @@ export class OSRMOnlineRoutingProvider implements RoutingProvider {
     endLng: number,
     signal?: AbortSignal,
   ): Promise<RouteDetails[]> {
-    return this.repo.getRouteAlternatives(startLat, startLng, endLat, endLng, signal);
+    return this.repo.getRouteAlternatives(
+      startLat,
+      startLng,
+      endLat,
+      endLng,
+      signal,
+    );
   }
 }
 
@@ -372,7 +440,13 @@ export class RoutingService {
     endLng: number,
     signal?: AbortSignal,
   ): Promise<RouteDetails | null> {
-    const routes = await this.getRouteAlternatives(startLat, startLng, endLat, endLng, signal);
+    const routes = await this.getRouteAlternatives(
+      startLat,
+      startLng,
+      endLat,
+      endLng,
+      signal,
+    );
     return routes.length > 0 ? routes[0] : null;
   }
 
@@ -480,7 +554,13 @@ export async function getRouteAlternatives(
   endLng: number,
   signal?: AbortSignal,
 ): Promise<RouteDetails[]> {
-  return routingService.getRouteAlternatives(startLat, startLng, endLat, endLng, signal);
+  return routingService.getRouteAlternatives(
+    startLat,
+    startLng,
+    endLat,
+    endLng,
+    signal,
+  );
 }
 
 export const getRouteDetails = getRoute;

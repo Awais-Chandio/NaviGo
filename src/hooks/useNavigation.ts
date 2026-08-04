@@ -2,13 +2,17 @@ import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { Alert, AppState } from 'react-native';
 import {
   getRouteAlternatives,
+  applyTravelModeToRoutes,
   OfflineRoutingUnavailableError,
   type RouteDetails,
   type NavigationStep,
 } from '../services/routingService';
 import { voiceNavigationService } from '../services/VoiceNavigationService';
 import { navigationStore } from '../store/navigationStore';
-import { mapMatchingService, MatchedLocation } from '../services/MapMatchingService';
+import {
+  mapMatchingService,
+  MatchedLocation,
+} from '../services/MapMatchingService';
 import { reroutingService } from '../services/ReroutingService';
 import {
   calculateBearing,
@@ -30,6 +34,7 @@ import {
   OfflineCoverageError,
   offlineMapManager,
 } from '../services/offlineMapService';
+import { type TravelMode } from '../config/travelModes';
 
 export type NavigationState =
   | 'idle'
@@ -56,12 +61,14 @@ interface AcceptedLocation {
 }
 
 export function useNavigation() {
-  const [navigationState, setNavigationState] = useState<NavigationState>('idle');
+  const [navigationState, setNavigationState] =
+    useState<NavigationState>('idle');
   const [destination, setDestination] = useState<DestinationInfo | null>(null);
   const [routes, setRoutes] = useState<RouteDetails[]>([]);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState<number>(0);
   const [isLoadingRoute, setIsLoadingRoute] = useState<boolean>(false);
   const [isRerouting, setIsRerouting] = useState<boolean>(false);
+  const [travelMode, setTravelMode] = useState<TravelMode>('driving');
 
   const [navigationSteps, setNavigationSteps] = useState<NavigationStep[]>([]);
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
@@ -77,9 +84,12 @@ export function useNavigation() {
   const [currentBearing, setCurrentBearing] = useState<number>(0);
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
   const [currentRoad, setCurrentRoad] = useState<string>('');
-  const [matchedLocation, setMatchedLocation] = useState<MatchedLocation | null>(null);
+  const [matchedLocation, setMatchedLocation] =
+    useState<MatchedLocation | null>(null);
   const [nextInstruction, setNextInstruction] = useState<string>('');
-  const [isMuted, setIsMuted] = useState<boolean>(voiceNavigationService.isMuted());
+  const [isMuted, setIsMuted] = useState<boolean>(
+    voiceNavigationService.isMuted(),
+  );
 
   const routeAbortRef = useRef<AbortController | null>(null);
   const lastRawLocationRef = useRef<AcceptedLocation | null>(null);
@@ -99,6 +109,7 @@ export function useNavigation() {
   const destinationRequestSequenceRef = useRef<number>(0);
   const arrivalHandledRef = useRef<boolean>(false);
   const arrivalCandidateCountRef = useRef<number>(0);
+  const travelModeRef = useRef<TravelMode>('driving');
 
   const activeRoute = useMemo(() => {
     return routes[selectedRouteIndex] || routes[0] || null;
@@ -106,9 +117,7 @@ export function useNavigation() {
 
   const activeRouteMetrics = useMemo(
     () =>
-      activeRoute
-        ? buildRouteGeometryMetrics(activeRoute.coordinates)
-        : null,
+      activeRoute ? buildRouteGeometryMetrics(activeRoute.coordinates) : null,
     [activeRoute],
   );
 
@@ -191,23 +200,27 @@ export function useNavigation() {
             offlineFailureMessage
               ? 'Offline Navigation Unavailable'
               : routeFailure
-                ? 'Routing Unavailable'
-                : 'Route Not Found',
+              ? 'Routing Unavailable'
+              : 'Route Not Found',
             offlineFailureMessage
               ? offlineFailureMessage
               : routeFailure
-                ? 'The routing service is unavailable. Check your connection and try again.'
-                : 'Unable to calculate a valid driving route to this destination.',
+              ? 'The routing service is unavailable. Check your connection and try again.'
+              : 'Unable to calculate a valid driving route to this destination.',
           );
         }
         return null;
       }
 
-      setRoutes(routeAlternatives);
+      const modeRoutes = applyTravelModeToRoutes(
+        routeAlternatives,
+        travelModeRef.current,
+      );
+      setRoutes(modeRoutes);
       setSelectedRouteIndex(0);
-      navigationStore.setRoutes(routeAlternatives, 0);
+      navigationStore.setRoutes(modeRoutes, 0);
 
-      const primary = routeAlternatives[0];
+      const primary = modeRoutes[0];
       setRemainingDistance(primary.distanceMeters);
       setRemainingDuration(primary.durationSeconds);
       if (showFailureAlert) {
@@ -230,6 +243,7 @@ export function useNavigation() {
         0,
         primary.distanceMeters,
         primary.durationSeconds,
+        travelModeRef.current,
       );
       setEta(initialEta.etaString);
 
@@ -237,7 +251,8 @@ export function useNavigation() {
       setCurrentStep(firstStep);
       setDistanceToStep(firstStep?.formattedDistance ?? '0 m');
 
-      const firstInstruction = firstStep?.instruction || 'Follow highlighted route';
+      const firstInstruction =
+        firstStep?.instruction || 'Follow highlighted route';
       setNextInstruction(firstInstruction);
       navigationStore.updateProgress(
         primary.distanceMeters,
@@ -250,7 +265,7 @@ export function useNavigation() {
         initialEta.etaString,
       );
 
-      return routeAlternatives;
+      return modeRoutes;
     },
     [],
   );
@@ -311,6 +326,30 @@ export function useNavigation() {
     mapMatchingService.reset();
   }, []);
 
+  const selectTravelMode = useCallback((mode: TravelMode) => {
+    if (
+      navigationStateRef.current === 'navigating' ||
+      travelModeRef.current === mode
+    ) {
+      return;
+    }
+    travelModeRef.current = mode;
+    setTravelMode(mode);
+    setSelectedRouteIndex(0);
+    setRoutes(currentRoutes => {
+      const nextRoutes = applyTravelModeToRoutes(currentRoutes, mode);
+      navigationStore.setRoutes(nextRoutes, 0);
+      return nextRoutes;
+    });
+    lastSegmentIndexRef.current = 0;
+    lastProgressDistanceRef.current = 0;
+    lastProgressTimestampRef.current = 0;
+    currentStepIndexRef.current = 0;
+    journeyDistanceTraveledRef.current = 0;
+    lastJourneyLocationRef.current = null;
+    mapMatchingService.reset();
+  }, []);
+
   useEffect(() => {
     if (activeRoute) {
       setRemainingDistance(activeRoute.distanceMeters);
@@ -334,6 +373,7 @@ export function useNavigation() {
         0,
         activeRoute.distanceMeters,
         activeRoute.durationSeconds,
+        travelModeRef.current,
       );
       setEta(initialEta.etaString);
       const firstStep = activeRoute.steps[0] || null;
@@ -344,7 +384,8 @@ export function useNavigation() {
   }, [activeRoute]);
 
   const startNavigation = useCallback(async () => {
-    if (!destination || !activeRoute || navigationState === 'navigating') return;
+    if (!destination || !activeRoute || navigationState === 'navigating')
+      return;
 
     if (!connectivityService.isOnlineMode()) {
       try {
@@ -519,7 +560,9 @@ export function useNavigation() {
       ) {
         logger.warn(
           'NavigationEngine',
-          `Ignored sudden GPS jump [${userLat.toFixed(5)}, ${userLng.toFixed(5)}], accuracy ${userAccuracy}m`,
+          `Ignored sudden GPS jump [${userLat.toFixed(5)}, ${userLng.toFixed(
+            5,
+          )}], accuracy ${userAccuracy}m`,
         );
         return;
       }
@@ -553,8 +596,7 @@ export function useNavigation() {
         typeof userSpeedMetersPerSecond === 'number' &&
         Number.isFinite(userSpeedMetersPerSecond) &&
         userSpeedMetersPerSecond >= 0 &&
-        userSpeedMetersPerSecond <=
-          LOCATION_CONFIG.GPS_MAX_PLAUSIBLE_SPEED_MPS
+        userSpeedMetersPerSecond <= LOCATION_CONFIG.GPS_MAX_PLAUSIBLE_SPEED_MPS
       ) {
         measuredSpeedKmH = userSpeedMetersPerSecond * 3.6;
       }
@@ -563,10 +605,7 @@ export function useNavigation() {
         currentSpeedRef.current <= 0
           ? measuredSpeedKmH
           : currentSpeedRef.current * 0.35 + measuredSpeedKmH * 0.65;
-      currentSpeedRef.current = Math.max(
-        0,
-        Number(smoothedSpeed.toFixed(1)),
-      );
+      currentSpeedRef.current = Math.max(0, Number(smoothedSpeed.toFixed(1)));
       setCurrentSpeed(currentSpeedRef.current);
 
       const previousFilteredLocation = lastFilteredLocationRef.current;
@@ -646,15 +685,10 @@ export function useNavigation() {
           filteredLatitude,
           filteredLongitude,
         );
-        const noiseFloorMeters = Math.max(
-          3,
-          Math.min(15, userAccuracy * 0.5),
-        );
+        const noiseFloorMeters = Math.max(3, Math.min(15, userAccuracy * 0.5));
         if (journeyDelta >= noiseFloorMeters) {
           journeyDistanceTraveledRef.current += journeyDelta;
-          setDistanceTraveled(
-            Math.round(journeyDistanceTraveledRef.current),
-          );
+          setDistanceTraveled(Math.round(journeyDistanceTraveledRef.current));
         }
       }
       lastJourneyLocationRef.current = {
@@ -699,10 +733,7 @@ export function useNavigation() {
       }
 
       setMatchedLocation(matched);
-      navigationStore.updateLocationTelemetry(
-        matched,
-        currentSpeedRef.current,
-      );
+      navigationStore.updateLocationTelemetry(matched, currentSpeedRef.current);
 
       if (matched.roadName) {
         setCurrentRoad(matched.roadName);
@@ -721,10 +752,7 @@ export function useNavigation() {
 
       const arrivalRadiusMeters = Math.max(
         12,
-        Math.min(
-          LOCATION_CONFIG.ARRIVAL_THRESHOLD_METERS,
-          userAccuracy * 1.2,
-        ),
+        Math.min(LOCATION_CONFIG.ARRIVAL_THRESHOLD_METERS, userAccuracy * 1.2),
       );
       const routeProgressBeforeFix =
         routeAtStart.distanceMeters > 0
@@ -738,10 +766,7 @@ export function useNavigation() {
         ? arrivalCandidateCountRef.current + 1
         : 0;
 
-      if (
-        arrivalCandidateCountRef.current >= 2 &&
-        !arrivalHandledRef.current
-      ) {
+      if (arrivalCandidateCountRef.current >= 2 && !arrivalHandledRef.current) {
         arrivalHandledRef.current = true;
         const arrivalProgress = Math.min(
           100,
@@ -749,7 +774,13 @@ export function useNavigation() {
         );
         logger.info(
           'NavigationEngine',
-          `[GPS: ${userLat.toFixed(5)}, ${userLng.toFixed(5)}] Acc: ${userAccuracy.toFixed(1)}m | Progress: ${arrivalProgress.toFixed(1)}% | RemDist: 0m | RemDur: 0s | ETA: now | OffRoute: false | Arrived: true`,
+          `[GPS: ${userLat.toFixed(5)}, ${userLng.toFixed(
+            5,
+          )}] Acc: ${userAccuracy.toFixed(
+            1,
+          )}m | Progress: ${arrivalProgress.toFixed(
+            1,
+          )}% | RemDist: 0m | RemDur: 0s | ETA: now | OffRoute: false | Arrived: true`,
         );
         navigationStateRef.current = 'arrived';
         setNavigationState('arrived');
@@ -802,7 +833,16 @@ export function useNavigation() {
       if (deviationResult.shouldRecalculate) {
         logger.info(
           'NavigationEngine',
-          `[GPS: ${userLat.toFixed(5)}, ${userLng.toFixed(5)}] Acc: ${userAccuracy.toFixed(1)}m | Progress: ${((lastProgressDistanceRef.current / routeAtStart.distanceMeters) * 100).toFixed(1)}% | RemDist: ${Math.round(routeAtStart.distanceMeters - lastProgressDistanceRef.current)}m | RemDur: pending | ETA: recalculating | OffRoute: true (${Math.round(deviationResult.distanceToRoute)}m) | Arrived: false`,
+          `[GPS: ${userLat.toFixed(5)}, ${userLng.toFixed(
+            5,
+          )}] Acc: ${userAccuracy.toFixed(1)}m | Progress: ${(
+            (lastProgressDistanceRef.current / routeAtStart.distanceMeters) *
+            100
+          ).toFixed(1)}% | RemDist: ${Math.round(
+            routeAtStart.distanceMeters - lastProgressDistanceRef.current,
+          )}m | RemDur: pending | ETA: recalculating | OffRoute: true (${Math.round(
+            deviationResult.distanceToRoute,
+          )}m) | Arrived: false`,
         );
         reroutingService.markRerouteStarted();
         setIsRerouting(true);
@@ -842,10 +882,7 @@ export function useNavigation() {
         routeAtStart.distanceMeters / routeAtStart.durationSeconds;
       const plausibleAdvanceMeters = Math.max(
         20,
-        Math.max(
-          routeSpeedMetersPerSecond,
-          currentSpeedRef.current / 3.6,
-        ) *
+        Math.max(routeSpeedMetersPerSecond, currentSpeedRef.current / 3.6) *
           elapsedSinceProgressSeconds *
           2 +
           userAccuracy,
@@ -879,6 +916,7 @@ export function useNavigation() {
         currentSpeedRef.current,
         routeAtStart.distanceMeters,
         routeAtStart.durationSeconds,
+        travelModeRef.current,
       );
       setRemainingDuration(dynamicEta.remainingDurationSeconds);
       setEta(dynamicEta.etaString);
@@ -897,8 +935,7 @@ export function useNavigation() {
         }
       }
 
-      const didAdvanceStep =
-        activeStepIndex !== currentStepIndexRef.current;
+      const didAdvanceStep = activeStepIndex !== currentStepIndexRef.current;
       currentStepIndexRef.current = activeStepIndex;
       const activeStep = routeAtStart.steps[activeStepIndex] || null;
       if (didAdvanceStep) {
@@ -917,13 +954,13 @@ export function useNavigation() {
         const distanceToManeuver = Number.isFinite(maneuverProgress)
           ? Math.max(0, maneuverProgress - progress.distanceTraveled)
           : activeStep.location
-            ? getHaversineDistance(
-                activeUserLat,
-                activeUserLng,
-                activeStep.location[1],
-                activeStep.location[0],
-              )
-            : progress.remainingDistance;
+          ? getHaversineDistance(
+              activeUserLat,
+              activeUserLng,
+              activeStep.location[1],
+              activeStep.location[0],
+            )
+          : progress.remainingDistance;
         setDistanceToStep(formatDistance(distanceToManeuver));
         voiceNavigationService.speakManeuverPrompt(
           activeStep.instruction,
@@ -944,7 +981,19 @@ export function useNavigation() {
 
       logger.info(
         'NavigationEngine',
-        `[GPS: ${userLat.toFixed(5)}, ${userLng.toFixed(5)}] Acc: ${userAccuracy.toFixed(1)}m | Progress: ${progress.progressPct.toFixed(1)}% | Traveled: ${Math.round(journeyDistanceTraveledRef.current)}m | RemDist: ${progress.remainingDistance}m | RemDur: ${dynamicEta.remainingDurationSeconds}s | ETA: ${dynamicEta.etaString} | OffRoute: ${deviationResult.isOffRoute} (${Math.round(deviationResult.distanceToRoute)}m) | Arrived: false`,
+        `[GPS: ${userLat.toFixed(5)}, ${userLng.toFixed(
+          5,
+        )}] Acc: ${userAccuracy.toFixed(
+          1,
+        )}m | Progress: ${progress.progressPct.toFixed(
+          1,
+        )}% | Traveled: ${Math.round(
+          journeyDistanceTraveledRef.current,
+        )}m | RemDist: ${progress.remainingDistance}m | RemDur: ${
+          dynamicEta.remainingDurationSeconds
+        }s | ETA: ${dynamicEta.etaString} | OffRoute: ${
+          deviationResult.isOffRoute
+        } (${Math.round(deviationResult.distanceToRoute)}m) | Arrived: false`,
       );
     },
     [
@@ -993,6 +1042,7 @@ export function useNavigation() {
     routeDetails: activeRoute,
     isLoadingRoute,
     isRerouting,
+    travelMode,
     navigationSteps,
     currentStepIndex,
     currentStep,
@@ -1012,6 +1062,7 @@ export function useNavigation() {
     isMuted,
     selectDestination,
     selectRouteIndex,
+    selectTravelMode,
     startNavigation,
     cancelNavigation,
     toggleVoiceMute,

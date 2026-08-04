@@ -21,6 +21,8 @@ export function useLocation(isNavigating = false) {
 
   const [address, setAddress] = useState<string>('');
   const [detectedArea, setDetectedArea] = useState<string>('');
+  const [detectedCity, setDetectedCity] = useState<string>('');
+  const [detectedCountryCode, setDetectedCountryCode] = useState<string>('');
   const [locationError, setLocationError] = useState<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const isMountedRef = useRef<boolean>(true);
@@ -65,6 +67,8 @@ export function useLocation(isNavigating = false) {
         if (res.detectedArea) {
           setDetectedArea(res.detectedArea);
         }
+        setDetectedCity(res.city ?? '');
+        setDetectedCountryCode(res.countryCode ?? '');
       } catch (err) {
         if (
           err &&
@@ -126,7 +130,9 @@ export function useLocation(isNavigating = false) {
       {
         interval,
         fastestInterval: Math.round(interval / 2),
-        distanceFilter: isNavigating ? 2 : LOCATION_CONFIG.GPS_DISTANCE_FILTER_METERS,
+        distanceFilter: isNavigating
+          ? 2
+          : LOCATION_CONFIG.GPS_DISTANCE_FILTER_METERS,
       },
     );
   }, [isNavigating, updateAddressIfNeeded]);
@@ -180,6 +186,8 @@ export function useLocation(isNavigating = false) {
     location,
     address,
     detectedArea,
+    detectedCity,
+    detectedCountryCode,
     locationError,
     refreshLocation,
   };

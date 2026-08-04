@@ -32,6 +32,13 @@ export interface SearchResult {
   source?: 'recent' | 'saved' | 'nearby' | 'search' | 'category';
 }
 
+export interface ReverseGeocodeDetails {
+  displayName: string;
+  detectedArea: string;
+  city?: string;
+  countryCode?: string;
+}
+
 export interface SearchOptions {
   userLocation?: {
     latitude: number;
@@ -50,8 +57,15 @@ export interface UnifiedSearchSuggestions {
 }
 
 export interface PlacesProvider {
-  searchPlaces(query: string, options?: SearchOptions): Promise<SearchPlaceItem[]>;
-  reverseGeocode(latitude: number, longitude: number, signal?: AbortSignal): Promise<string>;
+  searchPlaces(
+    query: string,
+    options?: SearchOptions,
+  ): Promise<SearchPlaceItem[]>;
+  reverseGeocode(
+    latitude: number,
+    longitude: number,
+    signal?: AbortSignal,
+  ): Promise<string>;
 }
 
 export { detectCategory, parseNominatimTitleAndSubtitle };
@@ -78,7 +92,7 @@ export class NominatimPlacesProvider implements PlacesProvider {
     latitude: number,
     longitude: number,
     signal?: AbortSignal,
-  ): Promise<{ displayName: string; detectedArea: string }> {
+  ): Promise<ReverseGeocodeDetails> {
     return this.repository.reverseGeocodeDetails(latitude, longitude, signal);
   }
 }
@@ -101,10 +115,7 @@ export class OfflinePlacesProvider implements PlacesProvider {
     longitude: number,
     _signal?: AbortSignal,
   ): Promise<string> {
-    logger.warn(
-      'Search',
-      'Offline reverse-geocoding index is not installed.',
-    );
+    logger.warn('Search', 'Offline reverse-geocoding index is not installed.');
     return `Offline Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`;
   }
 }
@@ -147,7 +158,7 @@ export class SearchService {
     latitude: number,
     longitude: number,
     signal?: AbortSignal,
-  ): Promise<{ displayName: string; detectedArea: string }> {
+  ): Promise<ReverseGeocodeDetails> {
     return this.repository.reverseGeocodeDetails(latitude, longitude, signal);
   }
 
@@ -204,6 +215,6 @@ export async function reverseGeocodeDetails(
   latitude: number,
   longitude: number,
   signal?: AbortSignal,
-): Promise<{ displayName: string; detectedArea: string }> {
+): Promise<ReverseGeocodeDetails> {
   return searchService.reverseGeocodeDetails(latitude, longitude, signal);
 }

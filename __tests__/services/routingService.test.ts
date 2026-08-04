@@ -1,4 +1,5 @@
 import {
+  applyTravelModeToRoutes,
   normalizeAndSortRoutes,
   OfflineRoutingUnavailableError,
   parseOSRMSteps,
@@ -155,6 +156,31 @@ describe('routingService', () => {
     expect(routes[0].durationSeconds).toBe(300);
   });
 
+  test('travel modes calculate separate duration estimates and preserve driving time', () => {
+    const baseRoutes = normalizeAndSortRoutes([
+      {
+        coordinates: [
+          [68, 25],
+          [68.04, 25.04],
+        ],
+        distanceMeters: 5000,
+        durationSeconds: 600,
+        formattedDistance: '',
+        formattedDuration: '',
+        steps: [],
+      },
+    ]);
+
+    const walking = applyTravelModeToRoutes(baseRoutes, 'walking');
+    const motorbike = applyTravelModeToRoutes(walking, 'motorbike');
+    const driving = applyTravelModeToRoutes(motorbike, 'driving');
+
+    expect(walking[0].durationSeconds).toBe(3600);
+    expect(motorbike[0].durationSeconds).toBe(514);
+    expect(driving[0].durationSeconds).toBe(600);
+    expect(driving[0].drivingDurationSeconds).toBe(600);
+  });
+
   test('offline routing explains when endpoints lack downloaded coverage', async () => {
     connectivityService.setMode('offline');
     try {
@@ -178,12 +204,7 @@ describe('routingService', () => {
 
     try {
       await expect(
-        routingService.getRouteAlternatives(
-          25.2,
-          68.2,
-          25.21,
-          68.21,
-        ),
+        routingService.getRouteAlternatives(25.2, 68.2, 25.21, 68.21),
       ).rejects.toBeInstanceOf(OfflineRoutingUnavailableError);
     } finally {
       connectivityService.setMode('online');

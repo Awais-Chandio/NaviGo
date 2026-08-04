@@ -1,4 +1,10 @@
-import { SearchPlaceItem, SearchOptions, UnifiedSearchSuggestions, SearchResult } from '../services/searchService';
+import {
+  ReverseGeocodeDetails,
+  SearchPlaceItem,
+  SearchOptions,
+  UnifiedSearchSuggestions,
+  SearchResult,
+} from '../services/searchService';
 import { getHaversineDistance, formatDistance } from '../utils/locationUtils';
 import { calculateRankingScore } from '../utils/rankingUtils';
 import { storageService } from '../services/storageService';
@@ -23,7 +29,7 @@ export interface ISearchRepository {
     latitude: number,
     longitude: number,
     signal?: AbortSignal,
-  ): Promise<{ displayName: string; detectedArea: string }>;
+  ): Promise<ReverseGeocodeDetails>;
   getSuggestions(
     query: string,
     userLocation?: { latitude: number; longitude: number },
@@ -38,6 +44,21 @@ interface CacheEntry<T> {
 
 function containsUrduScript(str: string): boolean {
   return /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
+}
+
+export function normalizeDetectedCity(city: string, county: string): string {
+  const normalizedCity = city.trim();
+  const normalizedCounty = county
+    .trim()
+    .replace(/\s+(district|division|county)$/i, '')
+    .trim();
+  if (
+    normalizedCounty &&
+    /\s+(taluka|tehsil|district)$/i.test(normalizedCity)
+  ) {
+    return normalizedCounty;
+  }
+  return normalizedCity || normalizedCounty;
 }
 
 export function detectCategory(
@@ -450,7 +471,7 @@ export class NominatimSearchRepository implements ISearchRepository {
     latitude: number,
     longitude: number,
     signal?: AbortSignal,
-  ): Promise<{ displayName: string; detectedArea: string }> {
+  ): Promise<ReverseGeocodeDetails> {
     try {
       const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&accept-language=en&addressdetails=1`;
       const response = await fetchWithTimeout(url, {
@@ -487,7 +508,23 @@ export class NominatimSearchRepository implements ISearchRepository {
         detectedArea = parts.length > 0 ? parts[0] : 'Current Location';
       }
 
-      return { displayName, detectedArea };
+      return {
+        displayName,
+        detectedArea,
+        city:
+          normalizeDetectedCity(
+            String(
+              data.address?.city ||
+                data.address?.town ||
+                data.address?.municipality ||
+                '',
+            ),
+            String(data.address?.county || ''),
+          ) || undefined,
+        countryCode:
+          String(data.address?.country_code || '').trim().toUpperCase() ||
+          undefined,
+      };
     } catch (error: unknown) {
       if (isCallerAbort(error, signal)) {
         throw error;
@@ -851,7 +888,7 @@ export class PhotonSearchRepository implements ISearchRepository {
     latitude: number,
     longitude: number,
     signal?: AbortSignal,
-  ): Promise<{ displayName: string; detectedArea: string }> {
+  ): Promise<ReverseGeocodeDetails> {
     if (
       !Number.isFinite(latitude) ||
       latitude < -90 ||
@@ -904,6 +941,7 @@ export class PhotonSearchRepository implements ISearchRepository {
       ).trim();
       const city = String(properties.city || properties.town || '').trim();
       const county = String(properties.county || '').trim();
+      const detectedCity = normalizeDetectedCity(city, county);
       const state = String(properties.state || '').trim();
       const country = String(properties.country || '').trim();
       const parts = Array.from(
@@ -914,6 +952,11 @@ export class PhotonSearchRepository implements ISearchRepository {
         displayName: parts.join(', ') || 'Address not found',
         detectedArea:
           district || city || county || street || name || 'Current Location',
+        city: detectedCity || undefined,
+        countryCode:
+          String(properties.countrycode || properties.country_code || '')
+            .trim()
+            .toUpperCase() || undefined,
       };
     } catch (error: unknown) {
       if (isCallerAbort(error, signal)) {

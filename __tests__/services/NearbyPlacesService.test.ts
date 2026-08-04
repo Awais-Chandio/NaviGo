@@ -1,6 +1,55 @@
-import { nearbyPlacesService } from '../../src/services/NearbyPlacesService';
+import {
+  NearbyPlacesService,
+  nearbyPlacesService,
+} from '../../src/services/NearbyPlacesService';
+import type { INearbyPlacesRepository } from '../../src/repositories/NearbyPlacesRepository';
+import type { DrivingDistanceProvider } from '../../src/services/RoadDistanceService';
 
 describe('NearbyPlacesService', () => {
+  it('replaces direct distances with road distances and sorts by the road result', async () => {
+    const repository: INearbyPlacesRepository = {
+      searchNearby: jest.fn().mockResolvedValue([
+        {
+          id: 'direct-nearest',
+          name: 'Direct Nearest',
+          latitude: 25.4,
+          longitude: 68.36,
+          address: 'First',
+          category: 'food',
+          distance: 400,
+          formattedDistance: '400 m',
+        },
+        {
+          id: 'road-nearest',
+          name: 'Road Nearest',
+          latitude: 25.41,
+          longitude: 68.37,
+          address: 'Second',
+          category: 'food',
+          distance: 700,
+          formattedDistance: '700 m',
+        },
+      ]),
+    };
+    const roadProvider: DrivingDistanceProvider = {
+      getDrivingDistances: jest.fn().mockResolvedValue([2200, 900]),
+    };
+    const service = new NearbyPlacesService(repository, roadProvider);
+
+    const results = await service.searchNearby({
+      latitude: 25.396,
+      longitude: 68.3578,
+      category: 'food',
+    });
+
+    expect(results.map(place => place.id)).toEqual([
+      'road-nearest',
+      'direct-nearest',
+    ]);
+    expect(results[0].formattedDistance).toBe('900 m');
+    expect(results[1].formattedDistance).toBe('2.2 km');
+  });
+
   it('returns empty array when GPS coordinates are missing or invalid', async () => {
     const resultsNull = await nearbyPlacesService.searchNearby({
       latitude: 0,

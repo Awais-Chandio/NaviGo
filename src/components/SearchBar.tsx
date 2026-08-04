@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -12,6 +12,7 @@ interface SearchBarProps {
   value: string;
   placeholder?: string;
   isLoading?: boolean;
+  focusRequestKey?: string | null;
   onChangeText: (text: string) => void;
   onClear?: () => void;
   onFocus?: () => void;
@@ -22,12 +23,20 @@ export const SearchBarComponent: React.FC<SearchBarProps> = ({
   value,
   placeholder = 'Search destination, places, fuel, food...',
   isLoading = false,
+  focusRequestKey = null,
   onChangeText,
   onClear,
   onFocus,
   onBlur,
 }) => {
   const [isFocused, setIsFocused] = useState<boolean>(false);
+  const inputRef = useRef<TextInput>(null);
+
+  useEffect(() => {
+    if (focusRequestKey) {
+      inputRef.current?.focus();
+    }
+  }, [focusRequestKey]);
 
   const handleFocus = useCallback(() => {
     setIsFocused(true);
@@ -43,6 +52,7 @@ export const SearchBarComponent: React.FC<SearchBarProps> = ({
     <View style={[styles.container, isFocused && styles.containerFocused]}>
       <Text style={styles.searchIcon}>🔍</Text>
       <TextInput
+        ref={inputRef}
         style={styles.input}
         value={value}
         placeholder={placeholder}
@@ -116,4 +126,3 @@ const styles = StyleSheet.create({
     color: '#5F6368',
   },
 });
-

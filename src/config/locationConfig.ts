@@ -19,7 +19,7 @@ export const LOCATION_CONFIG = {
 
   /** Default operating region: Hyderabad, Sindh, Pakistan */
   DEFAULT_REGION: {
-    latitude: 25.3960,
+    latitude: 25.396,
     longitude: 68.3578,
     cityName: 'Hyderabad',
     stateName: 'Sindh',
@@ -49,6 +49,9 @@ export const LOCATION_CONFIG = {
 
   /** Guaranteed circular coverage radius for a current-area offline download */
   DEFAULT_OFFLINE_REGION_RADIUS_KM: 10,
+
+  /** Safe city-wide fallback coverage for Hyderabad when boundary lookup is unavailable */
+  DEFAULT_CITY_OFFLINE_RADIUS_KM: 25,
 
   /** Battery optimization - Location watch interval in normal mode (ms) */
   NORMAL_LOCATION_INTERVAL: 5000,

@@ -145,6 +145,16 @@ describe('OfflineMapManager coverage contract', () => {
     ).toBeCloseTo(10000, 3);
   });
 
+  it('estimates a city download from the same bounds used by its pack', () => {
+    const manager = new OfflineMapManager();
+    const center = { latitude: 25.396, longitude: 68.3578 };
+    const estimate = manager.estimateRegionDownload(center, 25, 9, 16);
+
+    expect(estimate.bounds).toEqual(manager.getBoundsForCoverage(center, 25));
+    expect(estimate.estimatedTileCount).toBeGreaterThan(0);
+    expect(estimate.estimatedSizeBytes).toBeGreaterThan(5 * 1024 * 1024);
+  });
+
   it('prevents duplicate regions with the same radius and nearby center', async () => {
     const manager = new OfflineMapManager();
     await manager.createRegionAroundPoint({
