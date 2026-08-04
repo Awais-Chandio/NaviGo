@@ -5,22 +5,27 @@ import {
   UnifiedSearchSuggestions,
   SearchResult,
 } from '../services/searchService';
-import { getHaversineDistance, formatDistance } from '../utils/locationUtils';
+import {
+  getHaversineDistance,
+  formatDistance,
+  isValidCoordinate,
+} from '../utils/locationUtils';
 import { calculateRankingScore } from '../utils/rankingUtils';
 import { storageService } from '../services/storageService';
 import { savedPlacesService } from '../services/SavedPlacesService';
 import { nearbyPlacesService } from '../services/NearbyPlacesService';
 import { NEARBY_CATEGORIES } from '../config/nearbyCategories';
-import { LOCATION_CONFIG } from '../config/locationConfig';
 import { logger } from '../utils/logger';
 import {
   fetchWithTimeout,
   isCallerAbort,
+  RequestTimeoutError,
   waitForRetry,
 } from '../utils/networkUtils';
 
 const TAG = 'SearchRepository';
 const MAX_SEARCH_CACHE_ENTRIES = 100;
+const AUTOCOMPLETE_TIMEOUT_MS = 5000;
 
 export interface ISearchRepository {
   searchPlaces(query: string, options?: SearchOptions): Promise<SearchPlaceItem[]>;
@@ -44,6 +49,30 @@ interface CacheEntry<T> {
 
 function containsUrduScript(str: string): boolean {
   return /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
+}
+
+function normalizePlaceName(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+function isDuplicateSearchPlace(
+  existing: Pick<SearchPlaceItem, 'id' | 'title' | 'latitude' | 'longitude'>,
+  candidate: Pick<SearchPlaceItem, 'id' | 'title' | 'latitude' | 'longitude'>,
+): boolean {
+  if (String(existing.id) === String(candidate.id)) return true;
+  return (
+    normalizePlaceName(existing.title) === normalizePlaceName(candidate.title) &&
+    getHaversineDistance(
+      existing.latitude,
+      existing.longitude,
+      candidate.latitude,
+      candidate.longitude,
+    ) < 100
+  );
 }
 
 export function normalizeDetectedCity(city: string, county: string): string {
@@ -205,8 +234,10 @@ export class NominatimSearchRepository implements ISearchRepository {
 
   private getCacheKey(query: string, options?: SearchOptions): string {
     const qNorm = query.trim().toLowerCase();
-    const latGrid = options?.userLocation?.latitude.toFixed(2) || '0';
-    const lonGrid = options?.userLocation?.longitude.toFixed(2) || '0';
+    // Avoid missing the cache because of a few metres of normal GPS drift.
+    // GeocodingService recalculates displayed distances from the latest fix.
+    const latGrid = options?.userLocation?.latitude.toFixed(3) || 'none';
+    const lonGrid = options?.userLocation?.longitude.toFixed(3) || 'none';
     const country = options?.countryCode || 'all';
     return `${qNorm}_${latGrid}_${lonGrid}_${country}_${options?.limit || 15}`;
   }
@@ -241,17 +272,19 @@ export class NominatimSearchRepository implements ISearchRepository {
       try {
         const limit = options?.limit ?? 15;
         const userLoc = options?.userLocation;
-        const countryCodeParam = `&countrycodes=${(
-          options?.countryCode || 'pk'
-        ).toLowerCase()}`;
+        const countryCodeParam = options?.countryCode
+          ? `&countrycodes=${options.countryCode.toLowerCase()}`
+          : '';
 
         let viewboxBoundedParam = '';
         let viewboxUnboundedParam = '';
 
         if (
-          userLoc &&
-          Number.isFinite(userLoc?.latitude) &&
-          Number.isFinite(userLoc?.longitude)
+          isValidCoordinate(
+            userLoc?.latitude,
+            userLoc?.longitude,
+            true,
+          )
         ) {
           // Construct viewbox around user GPS (delta = 0.25 deg ~25km)
           const delta = 0.25;
@@ -279,7 +312,7 @@ export class NominatimSearchRepository implements ISearchRepository {
                 'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
               },
               signal: options?.signal,
-              timeoutMs: 10000,
+              timeoutMs: AUTOCOMPLETE_TIMEOUT_MS,
             });
 
             if (response.ok) {
@@ -288,8 +321,13 @@ export class NominatimSearchRepository implements ISearchRepository {
                 data = resData;
               }
             }
-          } catch {
-            // Ignore bounded error, continue to fallback
+          } catch (error) {
+            // A category switch aborts the old request intentionally. Do not
+            // turn that cancellation into another network request.
+            if (isCallerAbort(error, options?.signal)) {
+              throw error;
+            }
+            // Ignore provider failure and continue to the unbounded fallback.
           }
         }
 
@@ -305,7 +343,7 @@ export class NominatimSearchRepository implements ISearchRepository {
               'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
             },
             signal: options?.signal,
-            timeoutMs: 10000,
+            timeoutMs: AUTOCOMPLETE_TIMEOUT_MS,
           });
 
           if (response.ok) {
@@ -331,14 +369,7 @@ export class NominatimSearchRepository implements ISearchRepository {
           const { title, subtitle } = parseNominatimTitleAndSubtitle(displayName, namedetails, addressObj);
           const lat = parseFloat(String(item.lat ?? 0));
           const lon = parseFloat(String(item.lon ?? 0));
-          if (
-            !Number.isFinite(lat) ||
-            lat < -90 ||
-            lat > 90 ||
-            !Number.isFinite(lon) ||
-            lon < -180 ||
-            lon > 180
-          ) {
+          if (!isValidCoordinate(lat, lon, true)) {
             continue;
           }
           const itemType = typeof item.type === 'string' ? item.type : undefined;
@@ -349,9 +380,11 @@ export class NominatimSearchRepository implements ISearchRepository {
           let formattedDist: string | undefined;
 
           if (
-            userLoc &&
-            Number.isFinite(userLoc?.latitude) &&
-            Number.isFinite(userLoc?.longitude)
+            isValidCoordinate(
+              userLoc?.latitude,
+              userLoc?.longitude,
+              true,
+            )
           ) {
             distanceMeters = Math.round(
               getHaversineDistance(userLoc.latitude, userLoc.longitude, lat, lon),
@@ -422,9 +455,11 @@ export class NominatimSearchRepository implements ISearchRepository {
 
         // Logging search execution details
         if (
-          userLoc &&
-          Number.isFinite(userLoc?.latitude) &&
-          Number.isFinite(userLoc?.longitude)
+          isValidCoordinate(
+            userLoc?.latitude,
+            userLoc?.longitude,
+            true,
+          )
         ) {
           logger.info(
             TAG,
@@ -437,7 +472,7 @@ export class NominatimSearchRepository implements ISearchRepository {
         cleanResults.forEach((r, idx) => {
           logger.info(
             TAG,
-            `  ${idx + 1}. "${r.title}" (${r.subtitle}) - ${r.formattedDistance || 'Distance N/A'} (${r.distanceMeters || 0}m away)`,
+            `  ${idx + 1}. "${r.title}" (${r.subtitle}) - ${r.formattedDistance || 'Distance N/A'} (${typeof r.distanceMeters === 'number' ? `${r.distanceMeters}m away` : 'distance unavailable'})`,
           );
         });
 
@@ -472,6 +507,12 @@ export class NominatimSearchRepository implements ISearchRepository {
     longitude: number,
     signal?: AbortSignal,
   ): Promise<ReverseGeocodeDetails> {
+    if (!isValidCoordinate(latitude, longitude, true)) {
+      return {
+        displayName: 'Address unavailable',
+        detectedArea: 'Current Location',
+      };
+    }
     try {
       const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&accept-language=en&addressdetails=1`;
       const response = await fetchWithTimeout(url, {
@@ -584,8 +625,15 @@ export class NominatimSearchRepository implements ISearchRepository {
     }));
 
     let nearby: SearchResult[] = [];
-    if (userLocation) {
+    if (
+      isValidCoordinate(
+        userLocation?.latitude,
+        userLocation?.longitude,
+        true,
+      )
+    ) {
       const categoryMatch = NEARBY_CATEGORIES.find(c =>
+        !c.isSavedPlace &&
         c.title.toLowerCase().includes(trimmed.toLowerCase()),
       );
       if (categoryMatch) {
@@ -595,6 +643,7 @@ export class NominatimSearchRepository implements ISearchRepository {
             longitude: userLocation.longitude,
             category: categoryMatch.category,
             radius: 2, // 2km default
+            includeRoadDistance: false,
           },
           signal,
         );
@@ -623,14 +672,25 @@ export class NominatimSearchRepository implements ISearchRepository {
 
 export class PhotonSearchRepository implements ISearchRepository {
   private cache: Map<string, CacheEntry<SearchPlaceItem[]>> = new Map();
+  private reverseCache: Map<string, CacheEntry<ReverseGeocodeDetails>> =
+    new Map();
   private pendingRequests: Map<string, Promise<SearchPlaceItem[]>> = new Map();
   private CACHE_TTL_MS = 5 * 60 * 1000;
 
   private getCacheKey(query: string, options?: SearchOptions): string {
     const qNorm = query.trim().toLowerCase();
-    const latGrid = (options?.userLocation?.latitude ?? LOCATION_CONFIG.DEFAULT_REGION.latitude).toFixed(2);
-    const lonGrid = (options?.userLocation?.longitude ?? LOCATION_CONFIG.DEFAULT_REGION.longitude).toFixed(2);
-    const country = (options?.countryCode || 'PK').toUpperCase();
+    const validLocation = isValidCoordinate(
+      options?.userLocation?.latitude,
+      options?.userLocation?.longitude,
+      true,
+    );
+    const latGrid = validLocation
+      ? options!.userLocation!.latitude.toFixed(3)
+      : 'none';
+    const lonGrid = validLocation
+      ? options!.userLocation!.longitude.toFixed(3)
+      : 'none';
+    const country = options?.countryCode?.toUpperCase() || 'ALL';
     return `${qNorm}_${latGrid}_${lonGrid}_${country}_${options?.limit || 15}`;
   }
 
@@ -662,20 +722,37 @@ export class PhotonSearchRepository implements ISearchRepository {
     const fetchPromise = (async () => {
       const startedAt = Date.now();
       try {
-        const userLoc = options?.userLocation || {
-          latitude: LOCATION_CONFIG.DEFAULT_REGION.latitude,
-          longitude: LOCATION_CONFIG.DEFAULT_REGION.longitude,
-        };
+        const userLoc = isValidCoordinate(
+          options?.userLocation?.latitude,
+          options?.userLocation?.longitude,
+          true,
+        )
+          ? options!.userLocation
+          : undefined;
         const limit = Math.max(1, Math.min(30, options?.limit ?? 15));
 
-        // Photon autocomplete is biased to the current fix and bounded to
-        // Pakistan so an incomplete feature cannot contaminate local results.
-        const pakistanBoundingBox = '60.87,23.63,77.84,37.10';
+        const requestedCountryCode = options?.countryCode
+          ?.trim()
+          .toUpperCase();
+        const locationBias = userLoc
+          ? `&lat=${userLoc.latitude}&lon=${userLoc.longitude}`
+          : '';
+        const countryBoundingBox =
+          requestedCountryCode === 'PK'
+            ? '&bbox=60.87,23.63,77.84,37.10'
+            : '';
+        const countryCodeParam = requestedCountryCode
+          ? `&countrycode=${requestedCountryCode}`
+          : '';
+
+        // Only include a location bias when a real GPS fix is available. The
+        // map's fallback camera center must not masquerade as user location.
         const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(
           trimmedQuery,
-        )}&lat=${userLoc.latitude}&lon=${userLoc.longitude}&lang=en&limit=${limit * 2}&bbox=${pakistanBoundingBox}&countrycode=PK`;
+        )}&lang=en&limit=${limit * 2}${locationBias}${countryBoundingBox}${countryCodeParam}`;
 
         let data: unknown = null;
+        let lastPhotonError: Error | null = null;
 
         // Retry once if API fails
         for (let attempt = 1; attempt <= 2; attempt++) {
@@ -686,21 +763,36 @@ export class PhotonSearchRepository implements ISearchRepository {
                 'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
               },
               signal: options?.signal,
-              timeoutMs: 10000,
+              timeoutMs: AUTOCOMPLETE_TIMEOUT_MS,
             });
 
             if (response.ok) {
               data = await response.json();
               break;
             }
+            lastPhotonError = new Error(
+              `Photon autocomplete failed (HTTP ${response.status}).`,
+            );
+            if (response.status < 500 && response.status !== 429) {
+              break;
+            }
           } catch (err) {
             if (isCallerAbort(err, options?.signal)) {
               throw err;
             }
-            if (attempt === 1) {
-              logger.info(TAG, `Photon API attempt 1 failed, retrying once...`);
-              await waitForRetry(300, options?.signal);
+            lastPhotonError =
+              err instanceof Error
+                ? err
+                : new Error('Photon autocomplete request failed.');
+            // Do not turn one slow autocomplete call into two consecutive
+            // full waits. Quick failures still get the retry below.
+            if (err instanceof RequestTimeoutError) {
+              break;
             }
+          }
+          if (attempt === 1) {
+            logger.info(TAG, 'Photon API attempt 1 failed, retrying once...');
+            await waitForRetry(300, options?.signal);
           }
         }
 
@@ -708,7 +800,10 @@ export class PhotonSearchRepository implements ISearchRepository {
         // Photon outage must surface as an empty/error result rather than using
         // that endpoint as a hidden typeahead fallback.
         if (!data || typeof data !== 'object' || !('features' in data)) {
-          logger.warn(TAG, 'Photon autocomplete unavailable after retry.');
+          // Provider outages are recoverable and expected in the nearby
+          // fallback chain; keep them out of React Native's warning LogBox.
+          logger.info(TAG, 'Photon autocomplete unavailable after retry.');
+          logger.debug(TAG, 'Last Photon failure.', lastPhotonError);
           throw new Error('Photon autocomplete is currently unavailable.');
         }
 
@@ -727,29 +822,20 @@ export class PhotonSearchRepository implements ISearchRepository {
           const lon = geometry.coordinates[0];
           const lat = geometry.coordinates[1];
 
-          if (
-            typeof lat !== 'number' ||
-            !Number.isFinite(lat) ||
-            lat < -90 ||
-            lat > 90 ||
-            typeof lon !== 'number' ||
-            !Number.isFinite(lon) ||
-            lon < -180 ||
-            lon > 180
-          ) {
+          if (!isValidCoordinate(lat, lon, true)) {
             continue;
           }
 
-          // Country Filter: Restrict strictly to Pakistan
+          // Keep provider metadata consistent with the requested country.
           const countryCode = String(props.countrycode || props.country_code || '').toLowerCase();
           const country = String(props.country || '').toLowerCase();
-
-          const isPakistan =
-            countryCode === 'pk' ||
-            countryCode === 'pak' ||
-            country === 'pakistan' ||
-            country.includes('pakistan');
-          if (!isPakistan) continue;
+          const requestedCountryLower = requestedCountryCode?.toLowerCase();
+          const matchesRequestedCountry =
+            !requestedCountryLower ||
+            countryCode === requestedCountryLower ||
+            (requestedCountryCode === 'PK' &&
+              (countryCode === 'pak' || country.includes('pakistan')));
+          if (!matchesRequestedCountry) continue;
 
           const name = String(props.name || props.title || '').trim();
 
@@ -779,15 +865,26 @@ export class PhotonSearchRepository implements ISearchRepository {
             resultCountry,
           ].filter(Boolean);
           const subtitle = Array.from(new Set(subtitleParts)).join(', ');
+          if (!subtitle) continue;
 
           const category = detectCategory(
             `${name} ${String(props.osm_key || '')} ${String(props.osm_value || '')}`,
           );
 
-          const distanceMeters = Math.round(
-            getHaversineDistance(userLoc.latitude, userLoc.longitude, lat, lon),
-          );
-          const formattedDistance = formatDistance(distanceMeters);
+          const distanceMeters = userLoc
+            ? Math.round(
+                getHaversineDistance(
+                  userLoc.latitude,
+                  userLoc.longitude,
+                  lat,
+                  lon,
+                ),
+              )
+            : undefined;
+          const formattedDistance =
+            typeof distanceMeters === 'number'
+              ? formatDistance(distanceMeters)
+              : undefined;
 
           const rankingScore = calculateRankingScore({
             title: name,
@@ -814,6 +911,7 @@ export class PhotonSearchRepository implements ISearchRepository {
             formattedDistance,
             categoryIcon: category.icon,
             categoryName: category.name,
+            raw: props,
             rankingScore,
           });
         }
@@ -821,10 +919,8 @@ export class PhotonSearchRepository implements ISearchRepository {
         // Remove proximity duplicates
         const uniqueResults: (SearchPlaceItem & { rankingScore: number })[] = [];
         for (const res of results) {
-          const isDup = uniqueResults.some(
-            existing =>
-              existing.title.toLowerCase() === res.title.toLowerCase() &&
-              getHaversineDistance(existing.latitude, existing.longitude, res.latitude, res.longitude) < 100,
+          const isDup = uniqueResults.some(existing =>
+            isDuplicateSearchPlace(existing, res),
           );
           if (!isDup) {
             uniqueResults.push(res);
@@ -847,12 +943,14 @@ export class PhotonSearchRepository implements ISearchRepository {
         // Logging search execution details
         logger.info(
           TAG,
-          `[GPS: ${userLoc.latitude.toFixed(5)}, ${userLoc.longitude.toFixed(5)}] API used: Photon API | Search: "${trimmedQuery}" | Results Count: ${cleanResults.length}`,
+          userLoc
+            ? `[GPS: ${userLoc.latitude.toFixed(5)}, ${userLoc.longitude.toFixed(5)}] API used: Photon API | Search: "${trimmedQuery}" | Results Count: ${cleanResults.length}`
+            : `API used: Photon API | Search: "${trimmedQuery}" | Results Count: ${cleanResults.length}`,
         );
         cleanResults.forEach((r, idx) => {
           logger.info(
             TAG,
-            `  ${idx + 1}. "${r.title}" (${r.subtitle}) - ${r.formattedDistance || 'Distance N/A'} (${r.distanceMeters || 0}m away)`,
+            `  ${idx + 1}. "${r.title}" (${r.subtitle}) - ${r.formattedDistance || 'Distance N/A'} (${typeof r.distanceMeters === 'number' ? `${r.distanceMeters}m away` : 'distance unavailable'})`,
           );
         });
 
@@ -889,34 +987,54 @@ export class PhotonSearchRepository implements ISearchRepository {
     longitude: number,
     signal?: AbortSignal,
   ): Promise<ReverseGeocodeDetails> {
-    if (
-      !Number.isFinite(latitude) ||
-      latitude < -90 ||
-      latitude > 90 ||
-      !Number.isFinite(longitude) ||
-      longitude < -180 ||
-      longitude > 180
-    ) {
+    if (!isValidCoordinate(latitude, longitude, true)) {
       return {
         displayName: 'Address unavailable',
         detectedArea: 'Current Location',
       };
     }
 
+    const cacheKey = `${latitude.toFixed(4)}_${longitude.toFixed(4)}`;
+    const cached = this.reverseCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
+      return { ...cached.data };
+    }
+    if (cached) this.reverseCache.delete(cacheKey);
+
     try {
       const url =
         `https://photon.komoot.io/reverse?lat=${latitude}` +
         `&lon=${longitude}&lang=en&limit=1`;
-      const response = await fetchWithTimeout(url, {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
-        },
-        signal,
-        timeoutMs: 10000,
-      });
-      if (!response.ok) {
-        throw new Error(`Photon reverse geocoding failed (${response.status})`);
+      let response: Response | null = null;
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const candidate = await fetchWithTimeout(url, {
+            headers: {
+              Accept: 'application/json',
+              'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
+            },
+            signal,
+            timeoutMs: 10000,
+          });
+          if (candidate.ok) {
+            response = candidate;
+            break;
+          }
+          lastError = new Error(
+            `Photon reverse geocoding failed (${candidate.status})`,
+          );
+          if (candidate.status < 500 && candidate.status !== 429) break;
+        } catch (error) {
+          if (isCallerAbort(error, signal)) throw error;
+          lastError = error;
+        }
+        if (attempt === 1) await waitForRetry(300, signal);
+      }
+      if (!response) {
+        throw lastError instanceof Error
+          ? lastError
+          : new Error('Photon reverse geocoding failed.');
       }
 
       const payload = (await response.json()) as {
@@ -948,7 +1066,7 @@ export class PhotonSearchRepository implements ISearchRepository {
         new Set([name, street, district, city, county, state, country].filter(Boolean)),
       );
 
-      return {
+      const details: ReverseGeocodeDetails = {
         displayName: parts.join(', ') || 'Address not found',
         detectedArea:
           district || city || county || street || name || 'Current Location',
@@ -958,6 +1076,11 @@ export class PhotonSearchRepository implements ISearchRepository {
             .trim()
             .toUpperCase() || undefined,
       };
+      setBoundedCache(this.reverseCache, cacheKey, {
+        timestamp: Date.now(),
+        data: details,
+      });
+      return details;
     } catch (error: unknown) {
       if (isCallerAbort(error, signal)) {
         throw error;
@@ -1021,21 +1144,25 @@ export class PhotonSearchRepository implements ISearchRepository {
     }));
 
     let nearby: SearchResult[] = [];
-    const loc = userLocation || {
-      latitude: LOCATION_CONFIG.DEFAULT_REGION.latitude,
-      longitude: LOCATION_CONFIG.DEFAULT_REGION.longitude,
-    };
-
     const categoryMatch = NEARBY_CATEGORIES.find(c =>
+      !c.isSavedPlace &&
       c.title.toLowerCase().includes(trimmed.toLowerCase()),
     );
-    if (categoryMatch) {
+    if (
+      categoryMatch &&
+      isValidCoordinate(
+        userLocation?.latitude,
+        userLocation?.longitude,
+        true,
+      )
+    ) {
       const nearbyPlaces = await nearbyPlacesService.searchNearby(
         {
-          latitude: loc.latitude,
-          longitude: loc.longitude,
+          latitude: userLocation.latitude,
+          longitude: userLocation.longitude,
           category: categoryMatch.category,
           radius: 2,
+          includeRoadDistance: false,
         },
         signal,
       );

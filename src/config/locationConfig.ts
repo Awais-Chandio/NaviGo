@@ -5,8 +5,8 @@ export const LOCATION_CONFIG = {
   /** Distance threshold in meters to trigger reverse geocoding update */
   ADDRESS_GEOCODE_THRESHOLD_METERS: 50,
 
-  /** Maximum allowed accuracy radius in meters for GPS fix filtering */
-  GPS_ACCURACY_MAX_THRESHOLD_METERS: 30,
+  /** Maximum usable accuracy radius for search and initial route requests */
+  GPS_ACCURACY_MAX_THRESHOLD_METERS: 100,
 
   /** Min distance change in meters required for native geolocation watch updates */
   GPS_DISTANCE_FILTER_METERS: 5,

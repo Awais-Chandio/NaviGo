@@ -1,7 +1,7 @@
 import Geolocation, { GeoPosition } from 'react-native-geolocation-service';
 import { RequestLocationPermission } from '../permissions/locationPermission';
 import { LOCATION_CONFIG } from '../config/locationConfig';
-import { isGPSJump } from '../utils/locationUtils';
+import { isGPSJump, isValidCoordinate } from '../utils/locationUtils';
 import { logger } from '../utils/logger';
 
 const TAG = 'GPS';
@@ -19,7 +19,13 @@ export function isLocationAccurate(position: GeoPosition): boolean {
   if (!position?.coords) return false;
   const accuracy = position.coords.accuracy;
   return (
+    isValidCoordinate(
+      position.coords.latitude,
+      position.coords.longitude,
+      true,
+    ) &&
     typeof accuracy === 'number' &&
+    Number.isFinite(accuracy) &&
     accuracy > 0 &&
     accuracy <= LOCATION_CONFIG.GPS_ACCURACY_MAX_THRESHOLD_METERS
   );
@@ -119,7 +125,7 @@ export function watchLocationUpdates(
       return;
     }
 
-      const watchId = Geolocation.watchPosition(
+    const watchId = Geolocation.watchPosition(
       position => {
         if (!isLocationAccurate(position)) {
           inaccurateFixCount += 1;

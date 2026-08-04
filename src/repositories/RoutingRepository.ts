@@ -1,15 +1,25 @@
 import { RouteDetails, OSRMStep, parseOSRMSteps } from '../services/routingService';
-import { formatDistance, formatDuration } from '../utils/locationUtils';
+import {
+  formatDistance,
+  formatDuration,
+  getHaversineDistance,
+  isValidCoordinate,
+} from '../utils/locationUtils';
 import { offlineRoutingService } from '../services/OfflineRoutingService';
 import { logger } from '../utils/logger';
 import {
   fetchWithTimeout,
   isCallerAbort,
+  RequestTimeoutError,
   waitForRetry,
 } from '../utils/networkUtils';
 
 const TAG = 'RoutingRepository';
-const OSRM_TIMEOUT_MS = 12000;
+const OSRM_TIMEOUT_MS = 7000;
+const OSRM_ROUTE_ENDPOINTS = [
+  'https://router.project-osrm.org',
+  'https://routing.openstreetmap.de/routed-car',
+];
 
 class NonRetryableRoutingHttpError extends Error {}
 
@@ -45,6 +55,11 @@ async function fetchRouteWithRetry(
         throw error;
       }
       lastError = error;
+      // A second full timeout doubles the wait after a location tap. Retry
+      // quick transient failures, but fail fast when the server timed out.
+      if (error instanceof RequestTimeoutError) {
+        break;
+      }
     }
 
     if (attempt === 1) {
@@ -56,6 +71,48 @@ async function fetchRouteWithRetry(
   throw lastError instanceof Error
     ? lastError
     : new Error('Routing server unavailable.');
+}
+
+async function fetchFastestRouteResponse(
+  routePath: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  type RouteOutcome = { response?: Response; error?: unknown; index: number };
+  const controllers = OSRM_ROUTE_ENDPOINTS.map(() => new AbortController());
+  const abortRequests = () => controllers.forEach(controller => controller.abort());
+  if (signal?.aborted) {
+    abortRequests();
+  } else {
+    signal?.addEventListener('abort', abortRequests, { once: true });
+  }
+
+  const requests = OSRM_ROUTE_ENDPOINTS.map((endpoint, index) =>
+    fetchRouteWithRetry(`${endpoint}${routePath}`, controllers[index].signal)
+      .then(response => ({ response, index } as RouteOutcome))
+      .catch(error => ({ error, index } as RouteOutcome)),
+  );
+
+  try {
+    const first = await Promise.race(requests);
+    if (signal?.aborted) {
+      throw first.error || new Error('Route request was cancelled.');
+    }
+    if (first.response) {
+      controllers.forEach((controller, index) => {
+        if (index !== first.index) controller.abort();
+      });
+      return first.response;
+    }
+
+    const second = await requests[first.index === 0 ? 1 : 0];
+    if (signal?.aborted) {
+      throw second.error || first.error || new Error('Route request was cancelled.');
+    }
+    if (second.response) return second.response;
+    throw second.error || first.error || new Error('Routing servers unavailable.');
+  } finally {
+    signal?.removeEventListener('abort', abortRequests);
+  }
 }
 
 export class NoRouteFoundError extends Error {
@@ -116,27 +173,18 @@ export class OSRMPlanRoutingRepository implements IRoutingRepository {
   ): Promise<RouteDetails[]> {
     const startedAt = Date.now();
     try {
-      const inputCoordinates = [startLat, startLng, endLat, endLng];
       if (
-        !inputCoordinates.every(
-          coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate),
-        ) ||
-        startLat < -90 ||
-        startLat > 90 ||
-        endLat < -90 ||
-        endLat > 90 ||
-        startLng < -180 ||
-        startLng > 180 ||
-        endLng < -180 ||
-        endLng > 180
+        !isValidCoordinate(startLat, startLng, true) ||
+        !isValidCoordinate(endLat, endLng, true)
       ) {
         throw new InvalidRoutingResponseError('Invalid routing coordinates.');
       }
 
-      // OSRM requires coordinates in longitude,latitude order
-      const url = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson&steps=true&alternatives=3&continue_straight=default`;
-
-      const response = await fetchRouteWithRetry(url, signal);
+      // OSRM requires coordinates in longitude,latitude order. Race two
+      // compatible public endpoints so one overloaded server cannot hold the
+      // location-opening flow for the full timeout.
+      const routePath = `/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson&steps=true&alternatives=3&continue_straight=default`;
+      const response = await fetchFastestRouteResponse(routePath, signal);
 
       let rawPayload: unknown;
       try {
@@ -197,11 +245,26 @@ export class OSRMPlanRoutingRepository implements IRoutingRepository {
           rt.duration > 0;
         const hasValidLegs =
           typeof rt.legs === 'undefined' || Array.isArray(rt.legs);
+        if (
+          !isValidCoords ||
+          !isValidDistance ||
+          !isValidDuration ||
+          !hasValidLegs
+        ) {
+          return false;
+        }
+
+        const [firstLng, firstLat] = coords[0];
+        const [lastLng, lastLat] = coords[coords.length - 1];
+        // Reject routes snapped to a completely different road network. Small
+        // endpoint snapping is expected for buildings and off-road POIs.
+        const startsNearOrigin =
+          getHaversineDistance(startLat, startLng, firstLat, firstLng) <= 2000;
+        const endsNearDestination =
+          getHaversineDistance(endLat, endLng, lastLat, lastLng) <= 2000;
         return (
-          isValidCoords &&
-          isValidDistance &&
-          isValidDuration &&
-          hasValidLegs
+          startsNearOrigin &&
+          endsNearDestination
         );
       });
 

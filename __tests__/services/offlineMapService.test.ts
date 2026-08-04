@@ -3,11 +3,23 @@ import {
   OFFLINE_REGION_METADATA_VERSION,
   OfflineMapManager,
   offlineMapService,
+  isTransientOfflineDownloadError,
 } from '../../src/services/offlineMapService';
 import { getHaversineDistance } from '../../src/utils/locationUtils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { OfflineManager } from '@maplibre/maplibre-react-native';
 
 describe('OfflineMapService', () => {
+  it('only retries transient native download failures', () => {
+    expect(isTransientOfflineDownloadError({ message: 'timeout' })).toBe(true);
+    expect(
+      isTransientOfflineDownloadError({ message: 'Network connection lost' }),
+    ).toBe(true);
+    expect(
+      isTransientOfflineDownloadError({ message: 'Invalid style definition' }),
+    ).toBe(false);
+  });
+
   it('creates an offline region pack with proper bounding box and estimated size', async () => {
     const bounds = {
       minLat: 25.31,
@@ -95,6 +107,90 @@ describe('OfflineMapManager coverage contract', () => {
     jest
       .mocked(AsyncStorage.setItem)
       .mockImplementation(() => Promise.resolve());
+    jest
+      .mocked(AsyncStorage.getItem)
+      .mockImplementation(() => Promise.resolve(null));
+    jest
+      .mocked(OfflineManager.getPacks)
+      .mockImplementation(() => Promise.resolve([]));
+  });
+
+  it('keeps completed downloads valid when native pack restore temporarily fails', async () => {
+    const center = { latitude: 25.396, longitude: 68.3578 };
+    const seedManager = new OfflineMapManager();
+    const bounds = seedManager.getBoundsForCoverage(center, 10);
+    jest.mocked(AsyncStorage.getItem).mockResolvedValueOnce(
+      JSON.stringify([
+        {
+          id: 'persisted-region',
+          nativePackId: 'native-pack',
+          name: 'Persisted Hyderabad',
+          center,
+          radiusKm: 10,
+          bounds,
+          minZoom: 10,
+          maxZoom: 16,
+          version: OFFLINE_REGION_METADATA_VERSION,
+          status: 'completed',
+          isDownloaded: true,
+          sizeBytes: 1024,
+          estimatedTileCount: 10,
+          downloadedTileCount: 10,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          updatedAt: '2026-08-01T00:00:00.000Z',
+        },
+      ]),
+    );
+    jest
+      .mocked(OfflineManager.getPacks)
+      .mockRejectedValueOnce(new Error('native database still opening'));
+
+    const manager = new OfflineMapManager();
+    await manager.initialize();
+
+    expect(manager.getRegion('persisted-region')).toMatchObject({
+      status: 'completed',
+      isDownloaded: true,
+      nativePackId: 'native-pack',
+    });
+  });
+
+  it('recovers a completed download from native metadata after an app restart', async () => {
+    const center = { latitude: 25.396, longitude: 68.3578 };
+    const seedManager = new OfflineMapManager();
+    const bounds = seedManager.getBoundsForCoverage(center, 10);
+    jest.mocked(OfflineManager.getPacks).mockResolvedValueOnce([
+      {
+        id: 'recovered-native-pack',
+        bounds: [bounds.minLng, bounds.minLat, bounds.maxLng, bounds.maxLat],
+        metadata: {
+          id: 'recovered-region',
+          name: 'Recovered Hyderabad',
+          version: OFFLINE_REGION_METADATA_VERSION,
+          center,
+          radiusKm: 10,
+          minZoom: 10,
+          maxZoom: 16,
+        },
+        status: jest.fn().mockResolvedValue({
+          state: 'complete',
+          completedTileCount: 50,
+          completedResourceSize: 2048,
+        }),
+      } as never,
+    ]);
+
+    const manager = new OfflineMapManager();
+    await manager.initialize();
+
+    expect(manager.getRegion('recovered-region')).toMatchObject({
+      nativePackId: 'recovered-native-pack',
+      status: 'completed',
+      isDownloaded: true,
+      bounds,
+      downloadedTileCount: 50,
+      sizeBytes: 2048,
+    });
   });
 
   it('uses one exact radius for metadata, native bounds, area, and map geometry', async () => {
@@ -191,6 +287,25 @@ describe('OfflineMapManager coverage contract', () => {
         longitude: 68.65,
       }),
     ).toBe(false);
+  });
+
+  it('recognizes the complete rectangular area downloaded by MapLibre', async () => {
+    const manager = new OfflineMapManager();
+    const center = { latitude: 25.65, longitude: 68.65 };
+    const region = await manager.createRegionAroundPoint({
+      name: 'Downloaded Bounds',
+      center,
+      radiusKm: 10,
+    });
+    const downloadedCorner = {
+      latitude: region.bounds.maxLat - 0.000001,
+      longitude: region.bounds.maxLng - 0.000001,
+    };
+
+    expect(manager.isPointInsideRegion(downloadedCorner, region)).toBe(false);
+    expect(
+      manager.isPointInsideDownloadedBounds(downloadedCorner, region),
+    ).toBe(true);
   });
 
   it('validates origin, destination, and every sampled route section', async () => {

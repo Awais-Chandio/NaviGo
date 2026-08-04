@@ -24,7 +24,7 @@ export const TRAVEL_MODE_CONFIG: Record<TravelMode, TravelModeConfig> = {
     id: 'motorbike',
     label: 'Bike',
     icon: '🏍️',
-    baselineSpeedKmH: 35,
+    baselineSpeedKmH: 27,
     minimumGpsSpeedKmH: 3,
     maximumGpsSpeedKmH: 140,
     usesRoadDuration: false,
@@ -33,7 +33,7 @@ export const TRAVEL_MODE_CONFIG: Record<TravelMode, TravelModeConfig> = {
     id: 'driving',
     label: 'Car',
     icon: '🚗',
-    baselineSpeedKmH: 30,
+    baselineSpeedKmH: 24,
     minimumGpsSpeedKmH: 3,
     maximumGpsSpeedKmH: 220,
     usesRoadDuration: true,
@@ -48,7 +48,7 @@ export const TRAVEL_MODES: readonly TravelMode[] = [
 
 export function getTravelModeEstimateLabel(mode: TravelMode): string {
   const config = TRAVEL_MODE_CONFIG[mode];
-  return config.usesRoadDuration
-    ? 'Road-speed estimate'
-    : `${config.baselineSpeedKmH} km/h baseline`;
+  return mode === 'walking'
+    ? `${config.baselineSpeedKmH} km/h baseline`
+    : 'Conservative road-condition estimate';
 }

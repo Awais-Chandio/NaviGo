@@ -1,6 +1,11 @@
-import { fetchWithTimeout } from '../utils/networkUtils';
+import { fetchWithTimeout, isCallerAbort } from '../utils/networkUtils';
+import { getHaversineDistance, isValidCoordinate } from '../utils/locationUtils';
 
-const ROAD_DISTANCE_TIMEOUT_MS = 7000;
+const ROAD_DISTANCE_TIMEOUT_MS = 5000;
+const ROAD_DISTANCE_ENDPOINTS = [
+  'https://router.project-osrm.org',
+  'https://routing.openstreetmap.de/routed-car',
+];
 
 export interface RoadDistanceDestination {
   latitude: number;
@@ -15,14 +20,10 @@ export interface DrivingDistanceProvider {
   ): Promise<Array<number | null>>;
 }
 
-function isValidCoordinate(location: RoadDistanceDestination): boolean {
+function isValidRoadCoordinate(location: RoadDistanceDestination): boolean {
   return (
-    Number.isFinite(location.latitude) &&
-    location.latitude >= -90 &&
-    location.latitude <= 90 &&
-    Number.isFinite(location.longitude) &&
-    location.longitude >= -180 &&
-    location.longitude <= 180
+    !!location &&
+    isValidCoordinate(location.latitude, location.longitude, true)
   );
 }
 
@@ -32,14 +33,14 @@ export class RoadDistanceService implements DrivingDistanceProvider {
     destinations: RoadDistanceDestination[],
     signal?: AbortSignal,
   ): Promise<Array<number | null>> {
-    if (!isValidCoordinate(origin)) {
+    if (!isValidRoadCoordinate(origin)) {
       throw new Error('A valid origin is required for road distances.');
     }
     if (destinations.length === 0) return [];
 
     const indexedDestinations = destinations
       .map((destination, originalIndex) => ({ destination, originalIndex }))
-      .filter(entry => isValidCoordinate(entry.destination));
+      .filter(entry => isValidRoadCoordinate(entry.destination));
     const output: Array<number | null> = destinations.map(() => null);
     if (indexedDestinations.length === 0) return output;
 
@@ -52,47 +53,71 @@ export class RoadDistanceService implements DrivingDistanceProvider {
     const destinationIndexes = indexedDestinations
       .map((_, index) => index + 1)
       .join(';');
-    const url =
-      `https://router.project-osrm.org/table/v1/driving/${coordinates}` +
-      `?sources=0&destinations=${destinationIndexes}&annotations=distance`;
+    let lastError: Error | null = null;
 
-    const response = await fetchWithTimeout(url, {
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
-      },
-      signal,
-      timeoutMs: ROAD_DISTANCE_TIMEOUT_MS,
-    });
-    if (!response.ok) {
-      throw new Error(
-        `Road distance service unavailable (HTTP ${response.status}).`,
-      );
+    for (const endpoint of ROAD_DISTANCE_ENDPOINTS) {
+      try {
+        const url =
+          `${endpoint}/table/v1/driving/${coordinates}` +
+          `?sources=0&destinations=${destinationIndexes}&annotations=distance`;
+        const response = await fetchWithTimeout(url, {
+          headers: {
+            Accept: 'application/json',
+            'User-Agent': 'NaviGo-NavigationApp/1.0 (contact@navigo.app)',
+          },
+          signal,
+          timeoutMs: ROAD_DISTANCE_TIMEOUT_MS,
+        });
+        if (!response.ok) {
+          throw new Error(
+            `Road distance service unavailable (HTTP ${response.status}).`,
+          );
+        }
+
+        const payload = (await response.json()) as {
+          code?: string;
+          distances?: Array<Array<number | null>>;
+        };
+        const distanceRow = payload.distances?.[0];
+        if (
+          payload.code !== 'Ok' ||
+          !Array.isArray(distanceRow) ||
+          distanceRow.length !== indexedDestinations.length
+        ) {
+          throw new Error(
+            'Road distance service returned an invalid response.',
+          );
+        }
+
+        indexedDestinations.forEach((entry, matrixIndex) => {
+          const distance = distanceRow[matrixIndex];
+          const directDistance = getHaversineDistance(
+            origin.latitude,
+            origin.longitude,
+            entry.destination.latitude,
+            entry.destination.longitude,
+          );
+          output[entry.originalIndex] =
+            typeof distance === 'number' &&
+            Number.isFinite(distance) &&
+            distance >= 0 &&
+            // Allow normal road snapping tolerance, but reject impossible
+            // matrix values shorter than the geodesic separation.
+            distance + 25 >= directDistance * 0.8
+              ? Math.round(distance)
+              : null;
+        });
+        return output;
+      } catch (error) {
+        if (isCallerAbort(error, signal)) throw error;
+        lastError =
+          error instanceof Error
+            ? error
+            : new Error('Road distance service unavailable.');
+      }
     }
 
-    const payload = (await response.json()) as {
-      code?: string;
-      distances?: Array<Array<number | null>>;
-    };
-    const distanceRow = payload.distances?.[0];
-    if (
-      payload.code !== 'Ok' ||
-      !Array.isArray(distanceRow) ||
-      distanceRow.length !== indexedDestinations.length
-    ) {
-      throw new Error('Road distance service returned an invalid response.');
-    }
-
-    indexedDestinations.forEach((entry, matrixIndex) => {
-      const distance = distanceRow[matrixIndex];
-      output[entry.originalIndex] =
-        typeof distance === 'number' &&
-        Number.isFinite(distance) &&
-        distance >= 0
-          ? Math.round(distance)
-          : null;
-    });
-    return output;
+    throw lastError || new Error('All road distance services are unavailable.');
   }
 }
 

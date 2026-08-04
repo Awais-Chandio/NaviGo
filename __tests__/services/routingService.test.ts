@@ -1,5 +1,6 @@
 import {
   applyTravelModeToRoutes,
+  estimateTravelModeDuration,
   normalizeAndSortRoutes,
   OfflineRoutingUnavailableError,
   parseOSRMSteps,
@@ -99,6 +100,62 @@ describe('routingService', () => {
     }
   });
 
+  test('uses the alternate OSRM endpoint without waiting for a slow primary', async () => {
+    const originalFetch = globalThis.fetch;
+    const routePayload = {
+      code: 'Ok',
+      routes: [
+        {
+          geometry: {
+            coordinates: [
+              [68, 25],
+              [68.01, 25.01],
+            ],
+          },
+          distance: 2000,
+          duration: 300,
+          legs: [{ steps: [] }],
+        },
+      ],
+    };
+    const fetchMock = jest.fn().mockImplementation(
+      (url: string, options?: RequestInit) => {
+        if (url.includes('router.project-osrm.org')) {
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => {
+              const error = new Error('cancelled');
+              error.name = 'AbortError';
+              reject(error);
+            });
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: jest.fn().mockResolvedValue(routePayload),
+        } as unknown as Response);
+      },
+    );
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    try {
+      const repository = new OSRMPlanRoutingRepository();
+      const routes = await repository.getRouteAlternatives(
+        25,
+        68,
+        25.01,
+        68.01,
+      );
+
+      expect(routes).toHaveLength(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[1][0])).toContain(
+        'routing.openstreetmap.de/routed-car',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('OSRM rejects an invalid or empty route payload', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = jest.fn().mockResolvedValue({
@@ -176,9 +233,32 @@ describe('routingService', () => {
     const driving = applyTravelModeToRoutes(motorbike, 'driving');
 
     expect(walking[0].durationSeconds).toBe(3600);
-    expect(motorbike[0].durationSeconds).toBe(514);
-    expect(driving[0].durationSeconds).toBe(600);
+    expect(motorbike[0].durationSeconds).toBeGreaterThan(600);
+    expect(driving[0].durationSeconds).toBeGreaterThan(
+      motorbike[0].durationSeconds,
+    );
     expect(driving[0].drivingDurationSeconds).toBe(600);
+  });
+
+  test('car and bike ETAs correct optimistic free-flow time without changing walking', () => {
+    const distanceMeters = 5000;
+    const freeFlowSeconds = 600;
+
+    expect(
+      estimateTravelModeDuration(distanceMeters, freeFlowSeconds, 'walking'),
+    ).toBe(3600);
+    expect(
+      estimateTravelModeDuration(distanceMeters, freeFlowSeconds, 'motorbike'),
+    ).toBeGreaterThan(freeFlowSeconds);
+    expect(
+      estimateTravelModeDuration(distanceMeters, freeFlowSeconds, 'driving'),
+    ).toBeGreaterThan(
+      estimateTravelModeDuration(
+        distanceMeters,
+        freeFlowSeconds,
+        'motorbike',
+      ),
+    );
   });
 
   test('offline routing explains when endpoints lack downloaded coverage', async () => {

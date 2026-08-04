@@ -29,6 +29,16 @@ const DUPLICATE_RADIUS_TOLERANCE_KM = 0.1;
 const ROUTE_COVERAGE_SAMPLE_METERS = 250;
 const EARTH_RADIUS_KM = 6371;
 const COVERAGE_BOUNDS_EPSILON_DEGREES = 1e-9;
+const MAX_NATIVE_TRANSIENT_RETRIES = 2;
+const NATIVE_RETRY_BASE_DELAY_MS = 500;
+
+export function isTransientOfflineDownloadError(error: unknown): boolean {
+  const message =
+    error && typeof error === 'object' && 'message' in error
+      ? String((error as { message: unknown }).message)
+      : String(error || '');
+  return /timeout|timed out|network|connection|temporar/i.test(message);
+}
 
 type OfflineRegionListener = (
   regions: OfflineRegion[],
@@ -225,10 +235,9 @@ export class OfflineMapManager {
           radiusKm: candidate.radiusKm as number,
         }
       : this.getConservativeCoverageFromBounds(candidate.bounds);
-    const bounds =
-      candidate.version === OFFLINE_REGION_METADATA_VERSION && hasStoredCoverage
-        ? this.getBoundsForCoverage(coverage.center, coverage.radiusKm)
-        : { ...candidate.bounds };
+    // The native pack is created from these exact bounds. Keep them unchanged
+    // across restarts so every downloaded tile remains recognized as covered.
+    const bounds = { ...candidate.bounds };
     const validStatuses: OfflineRegionStatus[] = [
       'idle',
       'queued',
@@ -296,73 +305,153 @@ export class OfflineMapManager {
     };
   }
 
+  private recoverRegionFromNativePack(pack: OfflinePack): OfflineRegion | null {
+    const metadata = pack.metadata;
+    const bounds = Array.isArray(pack.bounds)
+      ? {
+          minLng: Number(pack.bounds[0]),
+          minLat: Number(pack.bounds[1]),
+          maxLng: Number(pack.bounds[2]),
+          maxLat: Number(pack.bounds[3]),
+        }
+      : null;
+    if (
+      typeof metadata?.id !== 'string' ||
+      typeof metadata?.name !== 'string' ||
+      !bounds ||
+      !this.isValidBounds(bounds)
+    ) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    return this.normalizeStoredRegion({
+      id: metadata.id,
+      nativePackId: pack.id,
+      name: metadata.name,
+      center: metadata.center,
+      radiusKm: metadata.radiusKm,
+      coverageAreaKm2: metadata.coverageAreaKm2,
+      bounds,
+      minZoom: metadata.minZoom,
+      maxZoom: metadata.maxZoom,
+      version: metadata.version,
+      status: 'paused',
+      isDownloaded: false,
+      sizeBytes: 0,
+      estimatedTileCount: 0,
+      downloadedTileCount: 0,
+      createdAt:
+        typeof metadata.createdAt === 'string' ? metadata.createdAt : now,
+      updatedAt: now,
+      styleUrl:
+        typeof metadata.styleUrl === 'string'
+          ? metadata.styleUrl
+          : MAP_STYLES.light.url,
+    });
+  }
+
   private async initializeIfNeeded(): Promise<void> {
     if (this.isInitialized) return;
     if (this.initializationPromise) return this.initializationPromise;
 
     this.initializationPromise = (async () => {
       try {
-        await offlineDatabaseService.initializeDatabase();
-        const stored = await AsyncStorage.getItem(OFFLINE_REGIONS_KEY);
+        await offlineDatabaseService.initializeDatabase().catch(error => {
+          logger.warn(
+            TAG,
+            'Offline place database initialization failed.',
+            error,
+          );
+        });
+        const stored = await AsyncStorage.getItem(OFFLINE_REGIONS_KEY).catch(
+          error => {
+            logger.warn(TAG, 'Unable to read offline map metadata.', error);
+            return null;
+          },
+        );
         if (stored) {
-          const parsed: unknown = JSON.parse(stored);
-          if (Array.isArray(parsed)) {
-            parsed.forEach(value => {
-              const region = this.normalizeStoredRegion(value);
-              if (region) {
-                this.regionsMap.set(region.id, region);
-              }
-            });
+          try {
+            const parsed: unknown = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+              parsed.forEach(value => {
+                const region = this.normalizeStoredRegion(value);
+                if (region) {
+                  this.regionsMap.set(region.id, region);
+                }
+              });
+            }
+          } catch (error) {
+            // Native pack metadata below can rebuild the list if local JSON was
+            // interrupted or corrupted during a previous app shutdown.
+            logger.warn(TAG, 'Offline map metadata is invalid.', error);
           }
         }
 
         if (OfflineManager?.getPacks) {
-          const nativePacks = await OfflineManager.getPacks().catch(() => []);
-          const nativeIds = new Set<string>();
-          for (const pack of nativePacks) {
-            nativeIds.add(pack.id);
-            const localId =
-              typeof pack.metadata?.id === 'string'
-                ? pack.metadata.id
-                : undefined;
-            const region = localId ? this.regionsMap.get(localId) : undefined;
-            if (!region) continue;
-
-            region.nativePackId = pack.id;
-            const status = await pack.status().catch(() => null);
-            if (status) {
-              region.downloadedTileCount =
-                status.completedTileCount || region.downloadedTileCount;
-              if (status.completedResourceSize > 0) {
-                region.sizeBytes = status.completedResourceSize;
-              }
-              region.status =
-                status.state === 'complete'
-                  ? 'completed'
-                  : status.state === 'active'
-                  ? 'downloading'
-                  : 'paused';
-              region.isDownloaded = status.state === 'complete';
-              if (status.state === 'complete' && !region.downloadedAt) {
-                region.downloadedAt = new Date().toISOString();
-              }
-              if (status.state === 'active') {
-                this.activeDownloads.add(region.id);
-                await this.observeRestoredPack(region, pack);
-              }
-            }
+          let nativePacks: OfflinePack[] | null = null;
+          try {
+            nativePacks = await OfflineManager.getPacks();
+          } catch (error) {
+            // A native database can briefly be unavailable while the app is
+            // starting. Do not turn valid persisted downloads into errors just
+            // because this one reconciliation attempt failed.
+            logger.warn(TAG, 'Unable to restore native offline packs.', error);
           }
 
-          this.regionsMap.forEach(region => {
-            if (
-              region.nativePackId &&
-              !nativeIds.has(region.nativePackId) &&
-              region.isDownloaded
-            ) {
-              region.isDownloaded = false;
-              region.status = 'error';
+          if (nativePacks) {
+            const nativeIds = new Set<string>();
+            for (const pack of nativePacks) {
+              nativeIds.add(pack.id);
+              const localId =
+                typeof pack.metadata?.id === 'string'
+                  ? pack.metadata.id
+                  : undefined;
+              let region = localId ? this.regionsMap.get(localId) : undefined;
+              if (!region) {
+                region = this.recoverRegionFromNativePack(pack) ?? undefined;
+                if (region) {
+                  this.regionsMap.set(region.id, region);
+                }
+              }
+              if (!region) continue;
+
+              region.nativePackId = pack.id;
+              const status = await pack.status().catch(() => null);
+              if (status) {
+                region.downloadedTileCount =
+                  status.completedTileCount || region.downloadedTileCount;
+                if (status.completedResourceSize > 0) {
+                  region.sizeBytes = status.completedResourceSize;
+                }
+                region.status =
+                  status.state === 'complete'
+                    ? 'completed'
+                    : status.state === 'active'
+                    ? 'downloading'
+                    : 'paused';
+                region.isDownloaded = status.state === 'complete';
+                if (status.state === 'complete' && !region.downloadedAt) {
+                  region.downloadedAt = new Date().toISOString();
+                }
+                if (status.state === 'active') {
+                  this.activeDownloads.add(region.id);
+                  await this.observeRestoredPack(region, pack);
+                }
+              }
             }
-          });
+
+            this.regionsMap.forEach(region => {
+              if (
+                region.nativePackId &&
+                !nativeIds.has(region.nativePackId) &&
+                region.isDownloaded
+              ) {
+                region.isDownloaded = false;
+                region.status = 'error';
+              }
+            });
+          }
         }
         await this.persist();
       } catch (err) {
@@ -438,6 +527,29 @@ export class OfflineMapManager {
         region.center.longitude,
       ) <=
       region.radiusKm * 1000 + 1
+    );
+  }
+
+  /**
+   * MapLibre downloads the complete rectangular pack bounds. This check is
+   * for map display availability; route coverage intentionally keeps using the
+   * smaller guaranteed-radius check above.
+   */
+  public isPointInsideDownloadedBounds(
+    point: OfflineRegionCenter,
+    region: OfflineRegion,
+  ): boolean {
+    if (!this.isValidCoordinate(point) || !this.isValidBounds(region.bounds)) {
+      return false;
+    }
+    return (
+      point.latitude >=
+        region.bounds.minLat - COVERAGE_BOUNDS_EPSILON_DEGREES &&
+      point.latitude <=
+        region.bounds.maxLat + COVERAGE_BOUNDS_EPSILON_DEGREES &&
+      point.longitude >=
+        region.bounds.minLng - COVERAGE_BOUNDS_EPSILON_DEGREES &&
+      point.longitude <= region.bounds.maxLng + COVERAGE_BOUNDS_EPSILON_DEGREES
     );
   }
 
@@ -540,6 +652,10 @@ export class OfflineMapManager {
         center: { ...region.center },
         radiusKm: region.radiusKm,
         coverageAreaKm2: region.coverageAreaKm2,
+        minZoom: region.minZoom,
+        maxZoom: region.maxZoom,
+        styleUrl: region.styleUrl || MAP_STYLES.light.url,
+        createdAt: region.createdAt,
       },
     };
   }
@@ -1020,34 +1136,81 @@ export class OfflineMapManager {
         this.emit();
 
         return new Promise<void>((resolve, reject) => {
+          let settled = false;
+          let nativeRetryCount = 0;
+          let nativeRetryScheduled = false;
+
+          const failResumedDownload = (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            this.applyNativeError(region, {
+              message: error instanceof Error ? error.message : String(error),
+              id: existingPack.id,
+            });
+            reject(error instanceof Error ? error : new Error(String(error)));
+          };
+
           OfflineManager.addListener(
             existingPack.id,
             (_nativePack, status) => {
+              if (settled) return;
               const progress = this.applyNativeStatus(region, status);
               onProgress?.(progress);
               if (progress.status === 'completed') {
-                this.persist().catch(error => {
-                  logger.warn(
-                    TAG,
-                    'Failed to persist resumed offline pack.',
-                    error,
-                  );
-                });
-                resolve();
+                settled = true;
+                OfflineManager.removeListener(existingPack.id);
+                this.persist()
+                  .then(resolve)
+                  .catch(error => {
+                    logger.warn(
+                      TAG,
+                      'Failed to persist resumed offline pack.',
+                      error,
+                    );
+                    reject(
+                      new Error(
+                        'The map downloaded, but its offline state could not be saved.',
+                      ),
+                    );
+                  });
               }
             },
             (_nativePack, error) => {
-              this.applyNativeError(region, error);
-              reject(new Error(error.message || 'Download failed'));
+              if (settled || nativeRetryScheduled) return;
+              // A failed pack keeps its partial tiles. Retry the same pack for
+              // brief provider/network timeouts so the Retry action can make
+              // progress instead of immediately returning to the error state.
+              if (
+                isTransientOfflineDownloadError(error) &&
+                nativeRetryCount < MAX_NATIVE_TRANSIENT_RETRIES
+              ) {
+                nativeRetryCount += 1;
+                nativeRetryScheduled = true;
+                logger.info(
+                  TAG,
+                  `Transient resumed-download failure; resuming pack (attempt ${nativeRetryCount}/${MAX_NATIVE_TRANSIENT_RETRIES}).`,
+                );
+                setTimeout(() => {
+                  if (settled) return;
+                  existingPack
+                    .resume()
+                    .then(() => {
+                      nativeRetryScheduled = false;
+                    })
+                    .catch(resumeError => {
+                      nativeRetryScheduled = false;
+                      failResumedDownload(resumeError);
+                    });
+                }, NATIVE_RETRY_BASE_DELAY_MS * nativeRetryCount);
+                return;
+              }
+              failResumedDownload(
+                new Error(error.message || 'Download failed'),
+              );
             },
           )
             .then(() => existingPack.resume())
-            .catch(error => {
-              this.activeDownloads.delete(regionId);
-              region.status = 'error';
-              this.emit();
-              reject(error instanceof Error ? error : new Error(String(error)));
-            });
+            .catch(failResumedDownload);
         });
       }
 
@@ -1077,6 +1240,8 @@ export class OfflineMapManager {
         (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process
           ?.env?.NODE_ENV === 'test';
       let settled = false;
+      let nativeRetryCount = 0;
+      let nativeRetryScheduled = false;
 
       const failDownload = (error: unknown, nativePackId?: string) => {
         if (settled) return;
@@ -1111,7 +1276,6 @@ export class OfflineMapManager {
         region.updatedAt = region.downloadedAt;
         this.regionsMap.set(regionId, region);
         this.activeDownloads.delete(regionId);
-        this.persist().catch(() => undefined);
         this.emit({
           regionId,
           percentage: 100,
@@ -1122,7 +1286,16 @@ export class OfflineMapManager {
           totalTiles: region.estimatedTileCount,
           status: 'completed',
         });
-        resolve();
+        this.persist()
+          .then(resolve)
+          .catch(error => {
+            logger.warn(TAG, 'Failed to save completed offline pack.', error);
+            reject(
+              new Error(
+                'The map downloaded, but its offline state could not be saved.',
+              ),
+            );
+          });
       };
 
       (async () => {
@@ -1154,6 +1327,35 @@ export class OfflineMapManager {
                 }
               },
               (nativePack, error) => {
+                if (!settled && isTransientOfflineDownloadError(error)) {
+                  if (nativeRetryScheduled) {
+                    return;
+                  }
+                  // Map tile hosts can briefly time out while a valid partial
+                  // pack already exists. Resume that pack instead of deleting
+                  // progress and forcing the user to start from zero.
+                  if (nativeRetryCount < MAX_NATIVE_TRANSIENT_RETRIES) {
+                    nativeRetryCount += 1;
+                    nativeRetryScheduled = true;
+                    logger.info(
+                      TAG,
+                      `Transient native download failure; resuming pack (attempt ${nativeRetryCount}/${MAX_NATIVE_TRANSIENT_RETRIES}).`,
+                    );
+                    setTimeout(() => {
+                      if (settled) return;
+                      nativePack
+                        .resume()
+                        .then(() => {
+                          nativeRetryScheduled = false;
+                        })
+                        .catch(resumeError => {
+                          nativeRetryScheduled = false;
+                          failDownload(resumeError, nativePack.id);
+                        });
+                    }, NATIVE_RETRY_BASE_DELAY_MS * nativeRetryCount);
+                    return;
+                  }
+                }
                 logger.warn(TAG, 'Native download error:', error);
                 failDownload(
                   new Error(error.message || 'Download failed'),

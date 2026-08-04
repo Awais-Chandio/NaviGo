@@ -29,4 +29,38 @@ describe('RoadDistanceService', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('uses the alternate OSRM endpoint when the primary endpoint fails', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('primary unavailable'))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          code: 'Ok',
+          distances: [[980.2]],
+        }),
+      } as unknown as Response);
+    globalThis.fetch = fetchMock;
+
+    try {
+      const service = new RoadDistanceService();
+      const distances = await service.getDrivingDistances(
+        { latitude: 25.396, longitude: 68.3578 },
+        [{ latitude: 25.4, longitude: 68.36 }],
+      );
+
+      expect(distances).toEqual([980]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][0]).toContain(
+        'router.project-osrm.org/table/',
+      );
+      expect(fetchMock.mock.calls[1][0]).toContain(
+        'routing.openstreetmap.de/routed-car/table/',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

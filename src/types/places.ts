@@ -3,6 +3,9 @@ export interface NearbySearchParams {
   longitude: number;
   category: string;
   radius?: number;
+  countryCode?: string;
+  /** Road-distance enrichment is optional because it requires a second API call. */
+  includeRoadDistance?: boolean;
 }
 
 export interface NearbyPlace {

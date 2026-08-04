@@ -16,10 +16,16 @@ import { NavigationState } from '../hooks/useNavigation';
 import { SearchBar } from './SearchBar';
 import { NearbyCategoryBar } from './NearbyCategoryBar';
 import { NearbyCategory } from '../types/places';
-import { formatDistance } from '../utils/locationUtils';
+import {
+  formatDistance,
+  getHaversineDistance,
+  isValidCoordinate,
+} from '../utils/locationUtils';
 
 interface SearchHeaderProps {
   userLocation: { latitude: number; longitude: number };
+  hasLocationFix: boolean;
+  countryCode?: string;
   navigationState: NavigationState;
   recentSearches: SearchPlaceItem[];
   savedPlaces: SavedPlace[];
@@ -33,6 +39,33 @@ interface SearchHeaderProps {
 }
 
 const ItemSeparator = React.memo(() => <View style={styles.divider} />);
+const SEARCH_DEBOUNCE_MS = 180;
+
+function withoutDistance(item: SearchPlaceItem): SearchPlaceItem {
+  return {
+    ...item,
+    distanceMeters: undefined,
+    formattedDistance: undefined,
+  };
+}
+
+function withDistanceFromOrigin(
+  item: SearchPlaceItem,
+  latitude: number,
+  longitude: number,
+): SearchPlaceItem {
+  if (!isValidCoordinate(item.latitude, item.longitude, true)) {
+    return withoutDistance(item);
+  }
+  const distance = Math.round(
+    getHaversineDistance(latitude, longitude, item.latitude, item.longitude),
+  );
+  return {
+    ...item,
+    distanceMeters: distance,
+    formattedDistance: formatDistance(distance),
+  };
+}
 
 const SearchResultCardItem = React.memo(({
   item,
@@ -86,6 +119,8 @@ const SearchResultCardItem = React.memo(({
 
 export const SearchHeader: React.FC<SearchHeaderProps> = ({
   userLocation,
+  hasLocationFix,
+  countryCode,
   navigationState,
   recentSearches,
   categories,
@@ -102,6 +137,9 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [isFocused, setIsFocused] = useState<boolean>(false);
+  const [currentRecentSearches, setCurrentRecentSearches] = useState<
+    SearchPlaceItem[]
+  >(() => recentSearches.map(withoutDistance));
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
@@ -119,6 +157,24 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       }
     };
   }, []);
+
+  useEffect(() => {
+    const withoutStaleDistances = recentSearches.map(withoutDistance);
+
+    if (
+      recentSearches.length === 0 ||
+      !hasLocationFix ||
+      !isValidCoordinate(userLatitude, userLongitude, true)
+    ) {
+      setCurrentRecentSearches(withoutStaleDistances);
+      return;
+    }
+
+    const withCurrentDirectDistances = recentSearches.map(item =>
+      withDistanceFromOrigin(item, userLatitude, userLongitude),
+    );
+    setCurrentRecentSearches(withCurrentDirectDistances);
+  }, [hasLocationFix, recentSearches, userLatitude, userLongitude]);
 
   useEffect(() => {
     if (previousSetupTypeRef.current !== savedPlaceSetupType) {
@@ -146,12 +202,15 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
     try {
       const locationToUse =
-        Number.isFinite(userLatitude) && Number.isFinite(userLongitude)
+        hasLocationFix &&
+        Number.isFinite(userLatitude) &&
+        Number.isFinite(userLongitude)
           ? { latitude: userLatitude, longitude: userLongitude }
-          : { latitude: 25.396, longitude: 68.3578 };
+          : undefined;
 
       const results = await geocodingService.searchPlaces(text, {
         userLocation: locationToUse,
+        countryCode,
         limit: 15,
         signal: controller.signal,
       });
@@ -184,7 +243,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         searchAbortRef.current = null;
       }
     }
-  }, [userLatitude, userLongitude]);
+  }, [countryCode, hasLocationFix, userLatitude, userLongitude]);
 
   const handleTextChange = useCallback((text: string) => {
     setSearchText(text);
@@ -206,7 +265,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
     searchTimeoutRef.current = setTimeout(() => {
       executeSearch(text);
-    }, 350);
+    }, SEARCH_DEBOUNCE_MS);
   }, [executeSearch]);
 
   const handleSelectItem = useCallback((item: SearchPlaceItem) => {
@@ -314,11 +373,13 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
             )}
           />
         </View>
-      ) : isFocused && searchText.length === 0 && recentSearches.length > 0 ? (
+      ) : isFocused &&
+        searchText.length === 0 &&
+        currentRecentSearches.length > 0 ? (
         <View style={styles.suggestionsContainer}>
           <Text style={styles.sectionHeader}>Recent Searches</Text>
           <FlatList
-            data={recentSearches}
+            data={currentRecentSearches}
             keyExtractor={item => `recent-${item.id}`}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}

@@ -3,6 +3,7 @@ import { SearchPlaceItem } from './searchService';
 import { SavedPlace } from '../types/places';
 import { savedPlacesService } from './SavedPlacesService';
 import { logger } from '../utils/logger';
+import { getHaversineDistance, isValidCoordinate } from '../utils/locationUtils';
 
 export type { SavedPlace };
 
@@ -25,10 +26,15 @@ class StorageService {
       if (storedSearches) {
         const parsed: unknown = JSON.parse(storedSearches);
         if (Array.isArray(parsed)) {
-          this.recentSearches = parsed
+          const sanitizedStoredSearches = parsed
             .map(item => this.sanitizeRecentSearch(item))
             .filter((item): item is SearchPlaceItem => item !== null)
             .slice(0, 10);
+          // Preserve searches added while AsyncStorage was still loading.
+          this.recentSearches = this.mergeRecentSearches(
+            this.recentSearches,
+            sanitizedStoredSearches,
+          );
         }
       }
     } catch (e) {
@@ -56,31 +62,26 @@ class StorageService {
         typeof candidate.id !== 'number') ||
       typeof candidate.title !== 'string' ||
       !candidate.title.trim() ||
-      typeof candidate.latitude !== 'number' ||
-      !Number.isFinite(candidate.latitude) ||
-      candidate.latitude < -90 ||
-      candidate.latitude > 90 ||
-      typeof candidate.longitude !== 'number' ||
-      !Number.isFinite(candidate.longitude) ||
-      candidate.longitude < -180 ||
-      candidate.longitude > 180
+      !isValidCoordinate(candidate.latitude, candidate.longitude, true)
     ) {
       return null;
     }
 
     return {
       id: candidate.id,
-      title: candidate.title,
+      title: candidate.title.trim(),
       subtitle:
-        typeof candidate.subtitle === 'string' ? candidate.subtitle : '',
+        typeof candidate.subtitle === 'string' ? candidate.subtitle.trim() : '',
       latitude: candidate.latitude,
-      longitude: candidate.longitude,
+      longitude: candidate.longitude as number,
       displayName:
         typeof candidate.displayName === 'string'
-          ? candidate.displayName
-          : candidate.title,
-      distanceMeters: candidate.distanceMeters,
-      formattedDistance: candidate.formattedDistance,
+          ? candidate.displayName.trim()
+          : candidate.title.trim(),
+      // Distance is derived from the live GPS fix when recents are displayed;
+      // persisting it makes the same place show a stale distance next launch.
+      distanceMeters: undefined,
+      formattedDistance: undefined,
       categoryIcon: candidate.categoryIcon,
       categoryName: candidate.categoryName,
     };
@@ -90,8 +91,47 @@ class StorageService {
     return this.initializationPromise;
   }
 
+  private isSameRecentPlace(
+    first: SearchPlaceItem,
+    second: SearchPlaceItem,
+  ): boolean {
+    if (String(first.id) === String(second.id)) return true;
+    const firstTitle = first.title
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+    const secondTitle = second.title
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+    const separation = getHaversineDistance(
+      first.latitude,
+      first.longitude,
+      second.latitude,
+      second.longitude,
+    );
+    return separation < 5 || (firstTitle === secondTitle && separation < 100);
+  }
+
+  private mergeRecentSearches(
+    preferred: SearchPlaceItem[],
+    fallback: SearchPlaceItem[],
+  ): SearchPlaceItem[] {
+    const merged: SearchPlaceItem[] = [];
+    for (const item of [...preferred, ...fallback]) {
+      if (!merged.some(existing => this.isSameRecentPlace(existing, item))) {
+        merged.push(item);
+      }
+      if (merged.length === 10) break;
+    }
+    return merged;
+  }
+
   private queuePersist(): void {
     this.persistPromise = this.persistPromise
+      .then(() => this.initializationPromise)
       .then(() => this.persistSearches())
       .catch(error => {
         logger.warn('Storage', 'Recent-search persistence queue failed.', error);
@@ -105,7 +145,7 @@ class StorageService {
       return [...this.recentSearches];
     }
     this.recentSearches = this.recentSearches.filter(
-      r => r.id.toString() !== sanitizedItem.id.toString(),
+      recent => !this.isSameRecentPlace(recent, sanitizedItem),
     );
     this.recentSearches.unshift(sanitizedItem);
     if (this.recentSearches.length > 10) {

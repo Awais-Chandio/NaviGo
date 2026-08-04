@@ -121,41 +121,17 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
       latitude,
       longitude,
     );
-    const proximityScaleMeters = Math.max(maxRadiusMeters, 25000);
+    const proximityScaleMeters = Math.max(maxRadiusMeters, 5000);
+    // Keep proximity strong enough that a generic title-prefix match cannot
+    // push a materially farther result ahead of an equally relevant nearby
+    // place (for example, "Hospital Parking" ahead of a closer hospital).
     distanceScore =
-      500 * Math.exp(-distanceMeters / proximityScaleMeters);
+      700 * Math.exp(-distanceMeters / proximityScaleMeters);
   }
 
-  // 2. Hyderabad remains a regional preference only when the current search
-  // context is also near Hyderabad (or no current fix is available).
-  let hyderabadBonus = 0;
-  const hyderabadDistMeters = getHaversineDistance(25.3960, 68.3578, latitude, longitude);
-  const userDistanceToHyderabad = userLocation
-    ? getHaversineDistance(
-        userLocation.latitude,
-        userLocation.longitude,
-        25.396,
-        68.3578,
-      )
-    : 0;
-  const prioritizeHyderabad =
-    !userLocation || userDistanceToHyderabad < 75000;
-  if (prioritizeHyderabad && hyderabadDistMeters < 35000) {
-    hyderabadBonus = 120;
-  }
-
-  // 3. Priority Areas Match Bonus in Hyderabad
-  let areaBonus = 0;
-  const fullTextLower = `${title} ${subtitle || ''} ${JSON.stringify(address || {})} ${JSON.stringify(tags || {})}`.toLowerCase();
-  const priorityAreas = ['qasimabad', 'latifabad', 'autobahn', 'hala naka', 'saddar', 'hirabad'];
-  if (
-    prioritizeHyderabad &&
-    priorityAreas.some(area => fullTextLower.includes(area))
-  ) {
-    areaBonus = 75;
-  }
-
-  // 4. Metadata Completeness Bonus
+  // Metadata, brand, importance, and text relevance refine proximity. There
+  // is intentionally no hard-coded city bonus: the live GPS fix is the only
+  // geographic preference, so ranking remains correct outside one home city.
   let metadataBonus = hasCompleteMetadata(subtitle, address, tags) ? 20 : 0;
   if (tags) {
     if (tags.opening_hours) metadataBonus += 15;
@@ -163,15 +139,15 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
     if (tags.website || tags['contact:website']) metadataBonus += 15;
   }
 
-  // 5. Brand Availability Bonus: +30 points for known brands/operators
+  // Brand Availability Bonus: +30 points for known brands/operators
   const brandBonus = isBrandedPlace(title, namedetails, extratags, tags) ? 30 : 0;
 
-  // 6. Importance Score
+  // Importance Score
   const importanceScore = typeof importance === 'number' && !isNaN(importance)
     ? Math.min(50, Math.max(0, importance * 50))
     : 25;
 
-  // 7. Text match score (when searching with query)
+  // Text match score (when searching with query)
   let textMatchScore = 0;
   if (query && query.trim().length > 0) {
     const qLower = query.trim().toLowerCase();
@@ -187,7 +163,7 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
     }
   }
 
-  // 8. Penalty for generic names
+  // Penalty for generic names
   let genericPenalty = 0;
   if (
     !title ||
@@ -200,8 +176,6 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
 
   return (
     distanceScore +
-    hyderabadBonus +
-    areaBonus +
     importanceScore +
     metadataBonus +
     brandBonus +

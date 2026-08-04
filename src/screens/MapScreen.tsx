@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import {
+  ActivityIndicator,
   StyleSheet,
   StatusBar,
   TouchableOpacity,
   AppState,
   Alert,
+  View,
   type NativeSyntheticEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -35,6 +37,7 @@ import { OfflineMapsScreen } from './OfflineMapsScreen';
 import { SearchPlaceItem } from '../services/searchService';
 import { mapService } from '../services/mapService';
 import { nearbyPlacesService } from '../services/NearbyPlacesService';
+import { geocodingService } from '../services/geocodingService';
 import { savedPlacesService } from '../services/SavedPlacesService';
 import { NEARBY_CATEGORIES } from '../config/nearbyCategories';
 import { LOCATION_CONFIG } from '../config/locationConfig';
@@ -42,6 +45,7 @@ import { NearbyCategory, NearbyPlace, SavedPlace } from '../types/places';
 import {
   calculateBoundingBox,
   getHaversineDistance,
+  isValidCoordinate,
 } from '../utils/locationUtils';
 import { logger } from '../utils/logger';
 import { connectivityService } from '../services/connectivityService';
@@ -60,6 +64,8 @@ export default function MapScreen() {
   const [mapStyleUrl, setMapStyleUrl] = useState<string>(
     mapService.getActiveStyleUrl(),
   );
+  const [areOfflinePacksRestored, setAreOfflinePacksRestored] =
+    useState<boolean>(false);
   const [isOfflineMapsVisible, setIsOfflineMapsVisible] =
     useState<boolean>(false);
 
@@ -113,21 +119,39 @@ export default function MapScreen() {
     detectedCity,
     detectedCountryCode,
     locationError,
+    hasLocationFix: hasValidLocationFix,
   } = useLocation(isNavigating);
-  const hasValidLocationFix =
-    location.accuracy > 0 &&
-    location.accuracy <= LOCATION_CONFIG.GPS_ACCURACY_MAX_THRESHOLD_METERS;
   const { recentSearches, savedPlaces, addRecentSearch, savePlace } =
     useSavedPlaces();
 
   useEffect(() => {
-    offlineMapManager.initialize().catch(error => {
-      logger.warn(
-        'OfflineMaps',
-        'Offline map metadata initialization failed.',
-        error,
-      );
+    let isMounted = true;
+    nearbyPlacesService.setFallbackSearchProvider({
+      // Photon is consistently much faster for category chips. Radius and
+      // category validation still happen inside NearbyPlacesService.
+      searchPlaces: (query, options) =>
+        geocodingService.searchPlaces(query, options),
     });
+    offlineMapManager
+      .initialize()
+      .catch(error => {
+        logger.warn(
+          'OfflineMaps',
+          'Offline map metadata initialization failed.',
+          error,
+        );
+      })
+      .finally(() => {
+        if (isMounted) {
+          // Mounting the native map only after getPacks() completes lets
+          // MapLibre resolve the cached style/resources on a cold offline start.
+          setMapStyleUrl(mapService.getActiveStyleUrl());
+          setAreOfflinePacksRestored(true);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -203,9 +227,18 @@ export default function MapScreen() {
           latitude: location.latitude,
           longitude: location.longitude,
           category: activeCategoryConfig.category,
+          countryCode: detectedCountryCode || undefined,
           radius: LOCATION_CONFIG.DEFAULT_NEARBY_SEARCH_RADIUS_KM,
+          // Render places after the first API response instead of waiting for
+          // a second road-distance matrix request.
+          includeRoadDistance: false,
         },
         controller.signal,
+        partialResults => {
+          if (!controller.signal.aborted) {
+            setNearbyPlaces(partialResults);
+          }
+        },
       )
       .then(results => {
         if (!controller.signal.aborted) {
@@ -214,7 +247,11 @@ export default function MapScreen() {
       })
       .catch(err => {
         if (!controller.signal.aborted) {
-          logger.warn('MapScreen', 'Dynamic nearby search update error:', err);
+          logger.info(
+            'MapScreen',
+            'Nearby search providers are temporarily unavailable.',
+            err,
+          );
           setNearbyError('Unable to load nearby places right now.');
         }
       })
@@ -226,6 +263,7 @@ export default function MapScreen() {
       });
   }, [
     activeCategoryConfig,
+    detectedCountryCode,
     hasValidLocationFix,
     location.latitude,
     location.longitude,
@@ -437,11 +475,14 @@ export default function MapScreen() {
 
   const handleSelectPlace = useCallback(
     async (item: SearchPlaceItem) => {
+      if (!isValidCoordinate(item.latitude, item.longitude, true)) {
+        setErrorMessage('This place has invalid or incomplete coordinates.');
+        return;
+      }
       if (savedPlaceSetupType) {
         const label = savedPlaceSetupType === 'home' ? 'Home' : 'Work';
         const address = item.subtitle?.trim() || item.displayName || item.title;
         try {
-          addRecentSearch(item);
           await savePlace({
             id: savedPlaceSetupType,
             name: label,
@@ -450,33 +491,40 @@ export default function MapScreen() {
             longitude: item.longitude,
             type: savedPlaceSetupType,
           });
+          addRecentSearch(item);
           setSavedPlaceSetupType(null);
           setSelectedCategory(null);
           setActiveCategoryConfig(null);
           Alert.alert(`${label} Address Saved`, address);
         } catch (error) {
-          logger.warn(
-            'SavedPlaces',
-            `Unable to save ${label} address.`,
-            error,
-          );
+          logger.warn('SavedPlaces', `Unable to save ${label} address.`, error);
           setErrorMessage(`Unable to save ${label.toLowerCase()} address.`);
         }
         return;
       }
 
+      addRecentSearch(item);
+
+      if (cameraRef.current) {
+        cameraRef.current.easeTo({
+          center: [item.longitude, item.latitude],
+          zoom: 16,
+          duration: 800,
+        });
+      }
+      setIsFollowingUser(false);
+
       if (!hasValidLocationFix) {
         setErrorMessage(
-          'Wait for an accurate GPS fix before requesting a route.',
+          'Location opened. Wait for a GPS fix before requesting its route.',
         );
         return;
       }
-      addRecentSearch(item);
       selectDestination(location.latitude, location.longitude, {
         latitude: item.latitude,
         longitude: item.longitude,
         title: item.title,
-        subtitle: item.subtitle,
+        subtitle: item.subtitle?.trim() || item.displayName || item.title,
       });
     },
     [
@@ -492,6 +540,10 @@ export default function MapScreen() {
 
   const handleSelectSavedPlace = useCallback(
     (saved: SavedPlace) => {
+      if (!isValidCoordinate(saved.latitude, saved.longitude, true)) {
+        setErrorMessage('This saved place has invalid coordinates.');
+        return;
+      }
       if (!hasValidLocationFix) {
         setErrorMessage(
           'Wait for an accurate GPS fix before requesting a route.',
@@ -515,7 +567,7 @@ export default function MapScreen() {
 
   const handleCategoryPress = useCallback(
     async (category: NearbyCategory) => {
-      if (selectedCategory === category.id) {
+      if (selectedCategory === category.id && !category.isSavedPlace) {
         nearbyAbortRef.current?.abort();
         nearbyAbortRef.current = null;
         setIsLoadingNearby(false);
@@ -541,27 +593,59 @@ export default function MapScreen() {
           category.savedType,
         );
         if (savedPlace) {
-          if (!hasValidLocationFix) {
-            setErrorMessage(
-              'Wait for an accurate GPS fix before requesting a route.',
-            );
+          if (
+            !isValidCoordinate(savedPlace.latitude, savedPlace.longitude, true)
+          ) {
+            setErrorMessage('This saved place has invalid coordinates.');
             return;
           }
-          selectDestination(location.latitude, location.longitude, {
-            latitude: savedPlace.latitude,
-            longitude: savedPlace.longitude,
-            title: savedPlace.name,
-            subtitle: savedPlace.address,
-          });
+          const label = category.savedType === 'home' ? 'Home' : 'Work';
 
-          if (cameraRef.current) {
-            cameraRef.current.easeTo({
-              center: [savedPlace.longitude, savedPlace.latitude],
-              zoom: 16,
-              duration: 1000,
-            });
-          }
-          setIsFollowingUser(false);
+          // Saved Home/Work chips must remain editable. Previously a chip
+          // immediately opened the stored location, leaving no way to correct
+          // a wrong address without clearing application data.
+          Alert.alert(`${label} Address`, savedPlace.address, [
+            {
+              text: 'Cancel',
+              style: 'cancel',
+              onPress: () => {
+                setSelectedCategory(null);
+                setActiveCategoryConfig(null);
+              },
+            },
+            {
+              text: 'Change Address',
+              onPress: () => {
+                setErrorMessage(null);
+                setSavedPlaceSetupType(category.savedType!);
+              },
+            },
+            {
+              text: 'Navigate',
+              onPress: () => {
+                if (cameraRef.current) {
+                  cameraRef.current.easeTo({
+                    center: [savedPlace.longitude, savedPlace.latitude],
+                    zoom: 16,
+                    duration: 1000,
+                  });
+                }
+                setIsFollowingUser(false);
+                if (!hasValidLocationFix) {
+                  setErrorMessage(
+                    'Location opened. Wait for a GPS fix before requesting its route.',
+                  );
+                  return;
+                }
+                selectDestination(location.latitude, location.longitude, {
+                  latitude: savedPlace.latitude,
+                  longitude: savedPlace.longitude,
+                  title: savedPlace.name,
+                  subtitle: savedPlace.address,
+                });
+              },
+            },
+          ]);
         } else {
           setErrorMessage(null);
           setSavedPlaceSetupType(category.savedType);
@@ -614,9 +698,18 @@ export default function MapScreen() {
 
   const handleNavigateToNearbyPlace = useCallback(
     (place: NearbyPlace) => {
+      if (cameraRef.current) {
+        cameraRef.current.easeTo({
+          center: [place.longitude, place.latitude],
+          zoom: 16,
+          duration: 800,
+        });
+      }
+      setIsFollowingUser(false);
+
       if (!hasValidLocationFix) {
         setErrorMessage(
-          'Wait for an accurate GPS fix before requesting a route.',
+          'Location opened. Wait for a GPS fix before requesting its route.',
         );
         return;
       }
@@ -627,14 +720,6 @@ export default function MapScreen() {
         subtitle: place.address,
       });
       handleCloseNearbyCard();
-      if (cameraRef.current) {
-        cameraRef.current.easeTo({
-          center: [place.longitude, place.latitude],
-          zoom: 16,
-          duration: 800,
-        });
-      }
-      setIsFollowingUser(false);
     },
     [
       handleCloseNearbyCard,
@@ -732,6 +817,8 @@ export default function MapScreen() {
           latitude: location.latitude,
           longitude: location.longitude,
         }}
+        hasLocationFix={hasValidLocationFix}
+        countryCode={detectedCountryCode || undefined}
         navigationState={navigationState}
         recentSearches={recentSearches}
         savedPlaces={savedPlaces}
@@ -744,82 +831,88 @@ export default function MapScreen() {
         onSelectSavedPlace={handleSelectSavedPlace}
       />
 
-      <Map
-        style={styles.map}
-        mapStyle={mapStyleUrl}
-        onTouchStart={handleMapTouch}
-        onRegionDidChange={handleRegionDidChange}
-      >
-        {hasValidLocationFix && (
-          <AccuracyCircle
-            longitude={location.longitude}
-            latitude={location.latitude}
-            accuracy={location.accuracy}
-          />
-        )}
-
-        {routeDetails && (
-          <>
-            <RouteLine coordinates={routeDetails.coordinates} />
-            <TrafficLine
-              coordinates={routeDetails.coordinates}
-              visible={
-                travelMode !== 'walking' &&
-                (navigationState === 'navigating' ||
-                  navigationState === 'route_ready')
-              }
+      {areOfflinePacksRestored ? (
+        <Map
+          style={styles.map}
+          mapStyle={mapStyleUrl}
+          onTouchStart={handleMapTouch}
+          onRegionDidChange={handleRegionDidChange}
+        >
+          {hasValidLocationFix && (
+            <AccuracyCircle
+              longitude={location.longitude}
+              latitude={location.latitude}
+              accuracy={location.accuracy}
             />
-          </>
-        )}
+          )}
 
-        <Camera
-          ref={cameraRef}
-          initialViewState={{
-            zoom: currentZoom,
-            center: [markerLng, markerLat],
-          }}
-        />
-
-        {hasValidLocationFix && (
-          <UserMarker
-            longitude={markerLng}
-            latitude={markerLat}
-            bearing={currentBearing}
-            isNavigating={navigationState === 'navigating'}
-          />
-        )}
-
-        {destination && (
-          <DestinationMarker
-            longitude={destination.longitude}
-            latitude={destination.latitude}
-          />
-        )}
-
-        {nearbyPlaces.map(place => (
-          <ViewAnnotation
-            key={place.id}
-            id={`nearby-place-${place.id}`}
-            lngLat={[place.longitude, place.latitude]}
-          >
-            <TouchableOpacity
-              onPress={() => handleSelectNearbyPlace(place)}
-              activeOpacity={0.8}
-              style={styles.nearbyMarker}
-            >
-              <PersonPinCircle
-                width={selectedNearbyPlaceId === place.id ? 40 : 32}
-                height={selectedNearbyPlaceId === place.id ? 40 : 32}
-                fill={
-                  selectedNearbyPlaceId === place.id ? '#1A73E8' : '#EA4335'
+          {routeDetails && (
+            <>
+              <RouteLine coordinates={routeDetails.coordinates} />
+              <TrafficLine
+                coordinates={routeDetails.coordinates}
+                visible={
+                  travelMode !== 'walking' &&
+                  (navigationState === 'navigating' ||
+                    navigationState === 'route_ready')
                 }
-                stroke="#FFFFFF"
-                strokeWidth={1.5}
               />
-            </TouchableOpacity>
-          </ViewAnnotation>
-        ))}
-      </Map>
+            </>
+          )}
+
+          <Camera
+            ref={cameraRef}
+            initialViewState={{
+              zoom: currentZoom,
+              center: [markerLng, markerLat],
+            }}
+          />
+
+          {hasValidLocationFix && (
+            <UserMarker
+              longitude={markerLng}
+              latitude={markerLat}
+              bearing={currentBearing}
+              isNavigating={navigationState === 'navigating'}
+            />
+          )}
+
+          {destination && (
+            <DestinationMarker
+              longitude={destination.longitude}
+              latitude={destination.latitude}
+            />
+          )}
+
+          {nearbyPlaces.map(place => (
+            <ViewAnnotation
+              key={place.id}
+              id={`nearby-place-${place.id}`}
+              lngLat={[place.longitude, place.latitude]}
+            >
+              <TouchableOpacity
+                onPress={() => handleSelectNearbyPlace(place)}
+                activeOpacity={0.8}
+                style={styles.nearbyMarker}
+              >
+                <PersonPinCircle
+                  width={selectedNearbyPlaceId === place.id ? 40 : 32}
+                  height={selectedNearbyPlaceId === place.id ? 40 : 32}
+                  fill={
+                    selectedNearbyPlaceId === place.id ? '#1A73E8' : '#EA4335'
+                  }
+                  stroke="#FFFFFF"
+                  strokeWidth={1.5}
+                />
+              </TouchableOpacity>
+            </ViewAnnotation>
+          ))}
+        </Map>
+      ) : (
+        <View style={styles.mapLoading}>
+          <ActivityIndicator size="large" color="#1A73E8" />
+        </View>
+      )}
 
       <MapControls
         bearing={currentBearing}
@@ -909,6 +1002,12 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  mapLoading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EEF3F8',
   },
   nearbyMarker: {
     alignItems: 'center',

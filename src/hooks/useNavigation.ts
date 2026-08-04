@@ -25,6 +25,7 @@ import {
   formatDistance,
   formatDuration,
   isGPSJump,
+  isValidCoordinate,
   smoothBearing,
 } from '../utils/locationUtils';
 import { logger } from '../utils/logger';
@@ -193,20 +194,20 @@ export function useNavigation() {
         if (showFailureAlert) {
           const offlineFailureMessage =
             routeFailure instanceof OfflineCoverageError ||
-            routeFailure instanceof OfflineRoutingUnavailableError
+              routeFailure instanceof OfflineRoutingUnavailableError
               ? routeFailure.message
               : null;
           Alert.alert(
             offlineFailureMessage
               ? 'Offline Navigation Unavailable'
               : routeFailure
-              ? 'Routing Unavailable'
-              : 'Route Not Found',
+                ? 'Routing Unavailable'
+                : 'Route Not Found',
             offlineFailureMessage
               ? offlineFailureMessage
               : routeFailure
-              ? 'The routing service is unavailable. Check your connection and try again.'
-              : 'Unable to calculate a valid driving route to this destination.',
+                ? 'The routing service is unavailable. Check your connection and try again.'
+                : 'Unable to calculate a valid driving route to this destination.',
           );
         }
         return null;
@@ -272,10 +273,25 @@ export function useNavigation() {
 
   const selectDestination = useCallback(
     async (originLat: number, originLng: number, dest: DestinationInfo) => {
+      if (
+        !isValidCoordinate(originLat, originLng, true) ||
+        !isValidCoordinate(dest.latitude, dest.longitude, true)
+      ) {
+        Alert.alert(
+          'Invalid Location',
+          'A valid current location and destination are required for routing.',
+        );
+        return;
+      }
+      const normalizedDestination: DestinationInfo = {
+        ...dest,
+        title: dest.title.trim() || 'Selected place',
+        subtitle: dest.subtitle.trim(),
+      };
       const requestSequence = ++destinationRequestSequenceRef.current;
       navigationStateRef.current = 'idle';
       setNavigationState('idle');
-      setDestination(dest);
+      setDestination(normalizedDestination);
       setRoutes([]);
       setSelectedRouteIndex(0);
       setNavigationSteps([]);
@@ -283,10 +299,23 @@ export function useNavigation() {
       setCurrentStepIndex(0);
       setMatchedLocation(null);
       navigationStore.reset();
+      navigationStore.setDestination({
+        id: `${normalizedDestination.latitude}_${normalizedDestination.longitude}`,
+        name: normalizedDestination.title,
+        address: normalizedDestination.subtitle,
+        latitude: normalizedDestination.latitude,
+        longitude: normalizedDestination.longitude,
+        category: 'Location',
+        source: 'search',
+      });
       reroutingService.reset();
       mapMatchingService.reset();
 
-      const altRoutes = await fetchRoute(originLat, originLng, dest);
+      const altRoutes = await fetchRoute(
+        originLat,
+        originLng,
+        normalizedDestination,
+      );
       if (requestSequence !== destinationRequestSequenceRef.current) {
         return;
       }
@@ -513,18 +542,12 @@ export function useNavigation() {
       const processingNow = Date.now();
       const fixTimestamp =
         typeof userTimestampMs === 'number' &&
-        Number.isFinite(userTimestampMs) &&
-        userTimestampMs > 0 &&
-        userTimestampMs < processingNow + 60000
+          Number.isFinite(userTimestampMs) &&
+          userTimestampMs > 0 &&
+          userTimestampMs < processingNow + 60000
           ? userTimestampMs
           : processingNow;
-      const validCoordinates =
-        Number.isFinite(userLat) &&
-        userLat >= -90 &&
-        userLat <= 90 &&
-        Number.isFinite(userLng) &&
-        userLng >= -180 &&
-        userLng <= 180;
+      const validCoordinates = isValidCoordinate(userLat, userLng, true);
       const validAccuracy =
         Number.isFinite(userAccuracy) &&
         userAccuracy > 0 &&
@@ -874,18 +897,18 @@ export function useNavigation() {
       const elapsedSinceProgressSeconds =
         lastProgressTimestampRef.current > 0
           ? Math.max(
-              0.5,
-              (fixTimestamp - lastProgressTimestampRef.current) / 1000,
-            )
+            0.5,
+            (fixTimestamp - lastProgressTimestampRef.current) / 1000,
+          )
           : 1;
       const routeSpeedMetersPerSecond =
         routeAtStart.distanceMeters / routeAtStart.durationSeconds;
       const plausibleAdvanceMeters = Math.max(
         20,
         Math.max(routeSpeedMetersPerSecond, currentSpeedRef.current / 3.6) *
-          elapsedSinceProgressSeconds *
-          2 +
-          userAccuracy,
+        elapsedSinceProgressSeconds *
+        2 +
+        userAccuracy,
       );
       const progress = calculateRouteProgress(
         activeUserLat,
@@ -927,7 +950,7 @@ export function useNavigation() {
         if (
           Number.isFinite(maneuverProgress) &&
           progress.distanceTraveled + STEP_COMPLETION_THRESHOLD_METERS >=
-            maneuverProgress
+          maneuverProgress
         ) {
           activeStepIndex += 1;
         } else {
@@ -954,13 +977,13 @@ export function useNavigation() {
         const distanceToManeuver = Number.isFinite(maneuverProgress)
           ? Math.max(0, maneuverProgress - progress.distanceTraveled)
           : activeStep.location
-          ? getHaversineDistance(
+            ? getHaversineDistance(
               activeUserLat,
               activeUserLng,
               activeStep.location[1],
               activeStep.location[0],
             )
-          : progress.remainingDistance;
+            : progress.remainingDistance;
         setDistanceToStep(formatDistance(distanceToManeuver));
         voiceNavigationService.speakManeuverPrompt(
           activeStep.instruction,
@@ -989,10 +1012,8 @@ export function useNavigation() {
           1,
         )}% | Traveled: ${Math.round(
           journeyDistanceTraveledRef.current,
-        )}m | RemDist: ${progress.remainingDistance}m | RemDur: ${
-          dynamicEta.remainingDurationSeconds
-        }s | ETA: ${dynamicEta.etaString} | OffRoute: ${
-          deviationResult.isOffRoute
+        )}m | RemDist: ${progress.remainingDistance}m | RemDur: ${dynamicEta.remainingDurationSeconds
+        }s | ETA: ${dynamicEta.etaString} | OffRoute: ${deviationResult.isOffRoute
         } (${Math.round(deviationResult.distanceToRoute)}m) | Arrived: false`,
       );
     },

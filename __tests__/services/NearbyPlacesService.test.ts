@@ -50,6 +50,196 @@ describe('NearbyPlacesService', () => {
     expect(results[1].formattedDistance).toBe('2.2 km');
   });
 
+  it('returns nearby places without waiting for optional road-distance enrichment', async () => {
+    const repository: INearbyPlacesRepository = {
+      searchNearby: jest.fn().mockResolvedValue([
+        {
+          id: 'fast-result',
+          name: 'Fast Result',
+          latitude: 25.397,
+          longitude: 68.358,
+          address: 'Nearby Road',
+          category: 'food',
+          distance: 0,
+        },
+      ]),
+    };
+    const roadProvider: DrivingDistanceProvider = {
+      getDrivingDistances: jest.fn(),
+    };
+    const service = new NearbyPlacesService(repository, roadProvider);
+
+    const results = await service.searchNearby({
+      latitude: 25.396,
+      longitude: 68.3578,
+      category: 'food',
+      includeRoadDistance: false,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].distance).toBeGreaterThan(0);
+    expect(roadProvider.getDrivingDistances).not.toHaveBeenCalled();
+  });
+
+  it('shows a fast partial result and then merges the slower provider', async () => {
+    const repository: INearbyPlacesRepository = {
+      searchNearby: jest.fn(() =>
+        new Promise(resolve => {
+          setTimeout(
+            () =>
+              resolve([
+                {
+                  id: 'overpass-result',
+                  name: 'Detailed Restaurant',
+                  latitude: 25.398,
+                  longitude: 68.359,
+                  address: 'Detailed address',
+                  category: 'restaurant',
+                  distance: 0,
+                },
+              ]),
+            5,
+          );
+        }),
+      ),
+    };
+    const fallbackProvider = {
+      searchPlaces: jest.fn().mockResolvedValue([
+        {
+          id: 'fast-photon-result',
+          title: 'Fast Restaurant',
+          subtitle: 'Saddar',
+          latitude: 25.397,
+          longitude: 68.358,
+          categoryName: 'Restaurant',
+        },
+      ]),
+    };
+    const roadProvider: DrivingDistanceProvider = {
+      getDrivingDistances: jest.fn(),
+    };
+    const service = new NearbyPlacesService(
+      repository,
+      roadProvider,
+      fallbackProvider,
+    );
+    const partialResults = jest.fn();
+
+    const results = await service.searchNearby(
+      {
+        latitude: 25.396,
+        longitude: 68.3578,
+        category: 'restaurant',
+        radius: 2,
+        includeRoadDistance: false,
+      },
+      undefined,
+      partialResults,
+    );
+
+    expect(partialResults).toHaveBeenCalledWith([
+      expect.objectContaining({ name: 'Fast Restaurant' }),
+    ]);
+    expect(results.map(place => place.name)).toEqual([
+      'Fast Restaurant',
+      'Detailed Restaurant',
+    ]);
+    expect(fallbackProvider.searchPlaces).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ['supermarket', 'City Shopping Mall', 'Shopping'],
+    ['school', 'City Public School', 'School'],
+    ['university', 'City University', 'University'],
+  ])(
+    'expands sparse %s results dynamically and keeps the detected country',
+    async (category, title, categoryName) => {
+      const repository: INearbyPlacesRepository = {
+        searchNearby: jest.fn().mockResolvedValue([]),
+      };
+      const fallbackProvider = {
+        searchPlaces: jest.fn().mockResolvedValue([
+          {
+            id: `${category}-result`,
+            title,
+            subtitle: 'Wider city area',
+            latitude: 25.44,
+            longitude: 68.3578,
+            categoryName,
+          },
+        ]),
+      };
+      const service = new NearbyPlacesService(
+        repository,
+        { getDrivingDistances: jest.fn() },
+        fallbackProvider,
+      );
+
+      const results = await service.searchNearby({
+        latitude: 25.396,
+        longitude: 68.3578,
+        category,
+        countryCode: 'AE',
+        radius: 2,
+        includeRoadDistance: false,
+      });
+
+      expect(results.map(place => place.name)).toEqual([title]);
+      expect(results[0].distance).toBeGreaterThan(2000);
+      expect(fallbackProvider.searchPlaces).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          countryCode: 'AE',
+          radiusMeters: 10000,
+        }),
+      );
+    },
+  );
+
+  it('uses the place-search fallback when Overpass times out', async () => {
+    const repository: INearbyPlacesRepository = {
+      searchNearby: jest.fn().mockRejectedValue(new Error('Overpass timeout')),
+    };
+    const roadProvider: DrivingDistanceProvider = {
+      getDrivingDistances: jest.fn(),
+    };
+    const fallbackProvider = {
+      searchPlaces: jest.fn().mockResolvedValue([
+        {
+          id: 'fallback-restaurant',
+          title: 'Fallback Restaurant',
+          subtitle: 'Nearby Road',
+          latitude: 25.397,
+          longitude: 68.358,
+          displayName: 'Fallback Restaurant, Nearby Road',
+          distanceMeters: 650,
+          formattedDistance: '650 m',
+        },
+      ]),
+    };
+    const service = new NearbyPlacesService(
+      repository,
+      roadProvider,
+      fallbackProvider,
+    );
+
+    const results = await service.searchNearby({
+      latitude: 25.396,
+      longitude: 68.3578,
+      category: 'restaurant',
+      radius: 2,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].name).toBe('Fallback Restaurant');
+    // Provider distances can be stale or based on another origin. The nearby
+    // service must derive fallback distance from the requested GPS fix.
+    expect(results[0].distance).toBeGreaterThan(100);
+    expect(results[0].distance).toBeLessThan(130);
+    expect(results[0].formattedDistance).toBe(`${results[0].distance} m`);
+    expect(roadProvider.getDrivingDistances).not.toHaveBeenCalled();
+  });
+
   it('returns empty array when GPS coordinates are missing or invalid', async () => {
     const resultsNull = await nearbyPlacesService.searchNearby({
       latitude: 0,

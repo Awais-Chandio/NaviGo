@@ -1,11 +1,40 @@
 import { TRAVEL_MODE_CONFIG, type TravelMode } from '../config/travelModes';
 
+/**
+ * Validates latitude/longitude before the pair enters search, routing, or
+ * persistence. Null Island is optionally rejected because (0, 0) is commonly
+ * produced by missing mobile-location data rather than a usable place.
+ */
+export function isValidCoordinate(
+  latitude: unknown,
+  longitude: unknown,
+  rejectNullIsland = false,
+): latitude is number {
+  return (
+    typeof latitude === 'number' &&
+    Number.isFinite(latitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    typeof longitude === 'number' &&
+    Number.isFinite(longitude) &&
+    longitude >= -180 &&
+    longitude <= 180 &&
+    (!rejectNullIsland || latitude !== 0 || longitude !== 0)
+  );
+}
+
 export function getHaversineDistance(
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number,
 ): number {
+  if (
+    !isValidCoordinate(lat1, lon1) ||
+    !isValidCoordinate(lat2, lon2)
+  ) {
+    return Infinity;
+  }
   const R = 6371e3;
   const rad = Math.PI / 180;
   const dLat = (lat2 - lat1) * rad;
@@ -544,13 +573,17 @@ export function calculateDynamicETA(
   let effectiveSpeedMetersPerSec = baselineSpeedMetersPerSec;
   if (hasUsableGpsSpeed) {
     const gpsSpeedMetersPerSec = currentSpeedKmH / 3.6;
-    // Route speed remains the stronger signal because it represents the road
-    // classes ahead; live speed corrects it for current conditions.
+    // Slow live movement is useful evidence of congestion or poor road
+    // conditions. A brief fast GPS sample is weaker evidence for the whole
+    // remaining trip, so it receives less weight and a tighter upper bound.
+    const gpsWeight =
+      gpsSpeedMetersPerSec < baselineSpeedMetersPerSec ? 0.55 : 0.2;
     const blendedSpeed =
-      0.4 * gpsSpeedMetersPerSec + 0.6 * baselineSpeedMetersPerSec;
+      gpsWeight * gpsSpeedMetersPerSec +
+      (1 - gpsWeight) * baselineSpeedMetersPerSec;
     effectiveSpeedMetersPerSec = Math.max(
-      baselineSpeedMetersPerSec * 0.35,
-      Math.min(baselineSpeedMetersPerSec * 2, blendedSpeed),
+      baselineSpeedMetersPerSec * 0.25,
+      Math.min(baselineSpeedMetersPerSec * 1.35, blendedSpeed),
     );
   }
 

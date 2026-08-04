@@ -1,4 +1,9 @@
-import { formatDistance, formatDuration } from '../utils/locationUtils';
+import {
+  formatDistance,
+  formatDuration,
+  getHaversineDistance,
+  isValidCoordinate,
+} from '../utils/locationUtils';
 import {
   IRoutingRepository,
   NoRouteFoundError,
@@ -166,12 +171,38 @@ export function normalizeAndSortRoutes(routes: unknown): RouteDetails[] {
       return first.distanceMeters - second.distanceMeters;
     });
 
-  const shortestDistance = normalized.reduce(
+  const uniqueRoutes = normalized.filter((route, index, allRoutes) => {
+    const routeStart = route.coordinates[0];
+    const routeEnd = route.coordinates[route.coordinates.length - 1];
+    return !allRoutes.slice(0, index).some(existing => {
+      const existingStart = existing.coordinates[0];
+      const existingEnd =
+        existing.coordinates[existing.coordinates.length - 1];
+      return (
+        Math.abs(existing.distanceMeters - route.distanceMeters) <= 5 &&
+        Math.abs(existing.durationSeconds - route.durationSeconds) <= 5 &&
+        getHaversineDistance(
+          existingStart[1],
+          existingStart[0],
+          routeStart[1],
+          routeStart[0],
+        ) < 10 &&
+        getHaversineDistance(
+          existingEnd[1],
+          existingEnd[0],
+          routeEnd[1],
+          routeEnd[0],
+        ) < 10
+      );
+    });
+  });
+
+  const shortestDistance = uniqueRoutes.reduce(
     (minimum, route) => Math.min(minimum, route.distanceMeters),
     Infinity,
   );
 
-  return normalized.map((route, index) => {
+  return uniqueRoutes.map((route, index) => {
     const tag: RouteDetails['tag'] =
       index === 0
         ? 'Fastest'
@@ -190,7 +221,6 @@ export function applyTravelModeToRoutes(
   routes: RouteDetails[],
   travelMode: TravelMode,
 ): RouteDetails[] {
-  const modeConfig = TRAVEL_MODE_CONFIG[travelMode];
   const converted = routes
     .filter(isValidRouteDetails)
     .map(route => {
@@ -198,14 +228,11 @@ export function applyTravelModeToRoutes(
         1,
         Math.round(route.drivingDurationSeconds ?? route.durationSeconds),
       );
-      const durationSeconds = modeConfig.usesRoadDuration
-        ? drivingDurationSeconds
-        : Math.max(
-            1,
-            Math.round(
-              route.distanceMeters / (modeConfig.baselineSpeedKmH / 3.6),
-            ),
-          );
+      const durationSeconds = estimateTravelModeDuration(
+        route.distanceMeters,
+        drivingDurationSeconds,
+        travelMode,
+      );
       return {
         ...route,
         drivingDurationSeconds,
@@ -238,6 +265,104 @@ export function applyTravelModeToRoutes(
       name: `Route ${index + 1} (${tag})`,
     };
   });
+}
+
+type RoadSpeedPoint = readonly [distanceKm: number, speedKmH: number];
+
+const PRACTICAL_ROAD_SPEEDS: Record<
+  Exclude<TravelMode, 'walking'>,
+  readonly RoadSpeedPoint[]
+> = {
+  // Short trips include junctions, local streets, surface variation, parking
+  // exits and normal urban delay that a free-flow router cannot observe.
+  driving: [
+    [0, 18],
+    [3, 20],
+    [10, 24],
+    [25, 30],
+    [60, 42],
+    [150, 60],
+  ],
+  motorbike: [
+    [0, 20],
+    [3, 23],
+    [10, 28],
+    [25, 34],
+    [60, 42],
+    [150, 50],
+  ],
+};
+
+function interpolatePracticalSpeed(
+  distanceKm: number,
+  points: readonly RoadSpeedPoint[],
+): number {
+  if (distanceKm <= points[0][0]) return points[0][1];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const next = points[index];
+    if (distanceKm <= next[0]) {
+      const span = next[0] - previous[0];
+      const ratio = span > 0 ? (distanceKm - previous[0]) / span : 0;
+      return previous[1] + (next[1] - previous[1]) * ratio;
+    }
+  }
+  return points[points.length - 1][1];
+}
+
+/**
+ * Converts a static free-flow route into a practical ETA without pretending
+ * that simulated traffic is live data. Walking remains distance/speed based;
+ * car and bike estimates use continuous distance-aware road speeds. The car
+ * estimate also retains the router duration plus a modest uncertainty buffer.
+ */
+export function estimateTravelModeDuration(
+  distanceMeters: number,
+  drivingDurationSeconds: number,
+  travelMode: TravelMode,
+): number {
+  const safeDistanceMeters = Math.max(1, distanceMeters);
+  const safeDrivingDuration = Math.max(1, drivingDurationSeconds);
+  if (travelMode === 'walking') {
+    return Math.max(
+      1,
+      Math.round(
+        safeDistanceMeters /
+          (TRAVEL_MODE_CONFIG.walking.baselineSpeedKmH / 3.6),
+      ),
+    );
+  }
+
+  const distanceKm = safeDistanceMeters / 1000;
+  const practicalSpeedKmH = interpolatePracticalSpeed(
+    distanceKm,
+    PRACTICAL_ROAD_SPEEDS[travelMode],
+  );
+  const roadConditionDuration =
+    safeDistanceMeters / (practicalSpeedKmH / 3.6);
+
+  if (travelMode === 'motorbike') {
+    // A bike may move through congestion faster than a car, but should never
+    // inherit the previous optimistic fixed-speed estimate.
+    return Math.max(
+      1,
+      Math.round(Math.max(roadConditionDuration, safeDrivingDuration * 0.85)),
+    );
+  }
+
+  // Public OSRM durations are not live-traffic ETAs. The smoothly decreasing
+  // buffer matters most on short urban trips and stays modest on long routes.
+  const routerUncertaintyMultiplier =
+    1.08 + 0.12 * Math.exp(-distanceKm / 20);
+  return Math.max(
+    1,
+    Math.round(
+      Math.max(
+        roadConditionDuration,
+        safeDrivingDuration * routerUncertaintyMultiplier,
+      ),
+    ),
+  );
 }
 
 function getManeuverIcon(type: string, modifier?: string): string {
@@ -305,7 +430,10 @@ export function parseOSRMSteps(rawSteps: OSRMStep[]): NavigationStep[] {
       const type = step.maneuver?.type || 'straight';
       const modifier = step.maneuver?.modifier || '';
       const streetName = step.name ? ` onto ${step.name}` : '';
-      const location = step.maneuver?.location;
+      const rawLocation = step.maneuver?.location;
+      const location = isValidRouteCoordinate(rawLocation)
+        ? [rawLocation[0], rawLocation[1]] as [number, number]
+        : undefined;
 
       let instruction = 'Continue straight';
 
@@ -457,6 +585,12 @@ export class RoutingService {
     endLng: number,
     signal?: AbortSignal,
   ): Promise<RouteDetails[]> {
+    if (
+      !isValidCoordinate(startLat, startLng, true) ||
+      !isValidCoordinate(endLat, endLng, true)
+    ) {
+      throw new Error('Valid origin and destination coordinates are required.');
+    }
     if (connectivityService.getMode() === 'offline') {
       return this.getOfflineRouteAlternatives(
         startLat,

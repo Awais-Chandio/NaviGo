@@ -8,9 +8,18 @@ import {
   calculateDynamicETA,
   getClosestPointOnSegment,
   isGPSJump,
+  isValidCoordinate,
 } from '../../src/utils/locationUtils';
 
 describe('locationUtils', () => {
+  test('validates coordinate ranges and rejects missing GPS sentinel values', () => {
+    expect(isValidCoordinate(25.396, 68.3578, true)).toBe(true);
+    expect(isValidCoordinate(91, 68, true)).toBe(false);
+    expect(isValidCoordinate(25, 181, true)).toBe(false);
+    expect(isValidCoordinate(0, 0, true)).toBe(false);
+    expect(getHaversineDistance(91, 68, 25, 68)).toBe(Infinity);
+  });
+
   test('getHaversineDistance calculates distance correctly', () => {
     // Distance between Karachi (24.8607, 67.0011) and Hyderabad (25.396, 68.3578) is approx ~148 km
     const dist = getHaversineDistance(24.8607, 67.0011, 25.396, 68.3578);
@@ -121,16 +130,30 @@ describe('locationUtils', () => {
       1000,
       50,
       1000,
-      Math.round(1000 / (35 / 3.6)),
+      Math.round(1000 / (27 / 3.6)),
       'motorbike',
     );
 
     // A vehicle-like GPS speed must not corrupt a walking ETA.
     expect(walking.remainingDurationSeconds).toBe(720);
     expect(walking.effectiveSpeedKmH).toBe(5);
-    // A valid live bike speed should shorten the 35 km/h baseline estimate.
-    expect(motorbike.effectiveSpeedKmH).toBeGreaterThan(35);
-    expect(motorbike.remainingDurationSeconds).toBeLessThan(103);
+    // A fast sample may shorten ETA, but must not dominate the whole trip.
+    expect(motorbike.effectiveSpeedKmH).toBeGreaterThan(27);
+    expect(motorbike.effectiveSpeedKmH).toBeLessThanOrEqual(36.5);
+    expect(motorbike.remainingDurationSeconds).toBeGreaterThan(95);
+  });
+
+  test('calculateDynamicETA increases car ETA when sustained GPS speed is slow', () => {
+    const congested = calculateDynamicETA(
+      5000,
+      8,
+      5000,
+      900,
+      'driving',
+    );
+
+    expect(congested.remainingDurationSeconds).toBeGreaterThan(900);
+    expect(congested.effectiveSpeedKmH).toBeLessThan(20);
   });
 
   test('isGPSJump detects sudden impossible location jumps', () => {

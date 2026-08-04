@@ -48,7 +48,7 @@ const NearbyPlaceItemCard = React.memo(({
           {item.name}
         </Text>
         <Text style={styles.distanceText}>
-          {formatDistance(item.distance)} away
+          {item.formattedDistance || formatDistance(item.distance)} away
         </Text>
         {!!item.address && (
           <Text style={styles.addressText} numberOfLines={1}>
@@ -107,7 +107,16 @@ const NearbyPlacesCardComponent: React.FC<NearbyPlacesCardProps> = ({
           <Text style={styles.headerTitle} numberOfLines={1}>
             {displayTitle}
           </Text>
-          {!isLoading && <Text style={styles.countBadge}>{places.length}</Text>}
+          {places.length > 0 && (
+            <Text style={styles.countBadge}>{places.length}</Text>
+          )}
+          {isLoading && places.length > 0 && (
+            <ActivityIndicator
+              size="small"
+              color="#1A73E8"
+              style={styles.refreshIndicator}
+            />
+          )}
         </View>
         <TouchableOpacity
           style={styles.closeButton}
@@ -118,7 +127,7 @@ const NearbyPlacesCardComponent: React.FC<NearbyPlacesCardProps> = ({
         </TouchableOpacity>
       </View>
 
-      {isLoading ? (
+      {isLoading && places.length === 0 ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#1A73E8" />
           <Text style={styles.loadingText}>
@@ -136,7 +145,7 @@ const NearbyPlacesCardComponent: React.FC<NearbyPlacesCardProps> = ({
           <Text style={styles.emptyIcon}>📍</Text>
           <Text style={styles.emptyTitle}>No Places Found</Text>
           <Text style={styles.emptyText}>
-            No nearby {categoryTitle.toLowerCase()} found within 2 km.
+            No nearby {categoryTitle.toLowerCase()} found in the expanded area.
           </Text>
         </View>
       ) : (
@@ -159,6 +168,11 @@ const NearbyPlacesCardComponent: React.FC<NearbyPlacesCardProps> = ({
           maxToRenderPerBatch={10}
           windowSize={5}
           removeClippedSubviews={true}
+          ListFooterComponent={
+            isLoading ? (
+              <Text style={styles.updatingText}>Updating nearby results…</Text>
+            ) : null
+          }
         />
       )}
     </View>
@@ -225,6 +239,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 12,
+  },
+  refreshIndicator: {
+    marginLeft: 8,
+  },
+  updatingText: {
+    paddingVertical: 10,
+    textAlign: 'center',
+    color: '#5F6368',
+    fontSize: 12,
+    fontWeight: '500',
   },
   closeButton: {
     padding: 6,

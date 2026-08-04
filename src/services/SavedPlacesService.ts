@@ -1,26 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SavedPlace } from '../types/places';
 import { logger } from '../utils/logger';
+import { isValidCoordinate } from '../utils/locationUtils';
 
 const SAVED_PLACES_KEY = '@navigo_saved_places_v2';
-
-export const DEFAULT_HOME_PLACE: SavedPlace = {
-  id: 'home',
-  name: 'Home',
-  address: 'Prince Town, Hyderabad',
-  latitude: 25.396,
-  longitude: 68.3578,
-  type: 'home',
-};
-
-export const DEFAULT_WORK_PLACE: SavedPlace = {
-  id: 'work',
-  name: 'Work',
-  address: 'Gor Colony, Noor Tower, Hyderabad',
-  latitude: 25.405,
-  longitude: 68.368,
-  type: 'work',
-};
 
 export class SavedPlacesService {
   private inMemoryCache: Map<string, SavedPlace> = new Map();
@@ -37,15 +20,29 @@ export class SavedPlacesService {
       typeof candidate.name === 'string' &&
       candidate.name.trim().length > 0 &&
       typeof candidate.address === 'string' &&
-      typeof candidate.latitude === 'number' &&
-      Number.isFinite(candidate.latitude) &&
-      candidate.latitude >= -90 &&
-      candidate.latitude <= 90 &&
-      typeof candidate.longitude === 'number' &&
-      Number.isFinite(candidate.longitude) &&
-      candidate.longitude >= -180 &&
-      candidate.longitude <= 180
+      candidate.address.trim().length > 0 &&
+      isValidCoordinate(candidate.latitude, candidate.longitude, true) &&
+      (typeof candidate.type === 'undefined' ||
+        candidate.type === 'home' ||
+        candidate.type === 'work' ||
+        candidate.type === 'favorite' ||
+        candidate.type === 'custom')
     );
+  }
+
+  private normalizePlace(place: SavedPlace): SavedPlace {
+    const canonicalId =
+      place.type === 'home' || place.type === 'work' ? place.type : place.id;
+    return {
+      ...place,
+      id: canonicalId.trim(),
+      name: place.name.trim(),
+      address: place.address.trim(),
+    };
+  }
+
+  private snapshot(): SavedPlace[] {
+    return Array.from(this.inMemoryCache.values(), place => ({ ...place }));
   }
 
   private async initializeIfNeeded(): Promise<void> {
@@ -60,7 +57,8 @@ export class SavedPlacesService {
           if (Array.isArray(parsed)) {
             parsed.forEach(place => {
               if (this.isValidPlace(place)) {
-                this.inMemoryCache.set(place.id, place);
+                const normalized = this.normalizePlace(place);
+                this.inMemoryCache.set(normalized.id, normalized);
               }
             });
           }
@@ -91,16 +89,18 @@ export class SavedPlacesService {
 
   public async getSavedPlaces(): Promise<SavedPlace[]> {
     await this.initializeIfNeeded();
-    return Array.from(this.inMemoryCache.values());
+    return this.snapshot();
   }
 
   public async getPlaceByType(
     type: 'home' | 'work' | 'favorite',
   ): Promise<SavedPlace | undefined> {
     await this.initializeIfNeeded();
-    return Array.from(this.inMemoryCache.values()).find(
-      p => p.type === type || p.id === type,
-    );
+    const canonical = this.inMemoryCache.get(type);
+    const place =
+      canonical ||
+      Array.from(this.inMemoryCache.values()).find(p => p.type === type);
+    return place ? { ...place } : undefined;
   }
 
   public async savePlace(place: SavedPlace): Promise<SavedPlace[]> {
@@ -108,13 +108,13 @@ export class SavedPlacesService {
     if (!this.isValidPlace(place)) {
       throw new Error('A valid saved place is required.');
     }
-    const updated: SavedPlace = {
+    const updated = this.normalizePlace({
       ...place,
       createdAt: place.createdAt || new Date().toISOString(),
-    };
-    this.inMemoryCache.set(place.id, updated);
+    });
+    this.inMemoryCache.set(updated.id, updated);
     await this.queuePersist();
-    return Array.from(this.inMemoryCache.values());
+    return this.snapshot();
   }
 
   public async updatePlace(
@@ -128,17 +128,21 @@ export class SavedPlacesService {
       if (!this.isValidPlace(merged)) {
         throw new Error('Saved-place update contains invalid data.');
       }
-      this.inMemoryCache.set(id, merged);
+      const normalized = this.normalizePlace(merged);
+      if (normalized.id !== id) {
+        this.inMemoryCache.delete(id);
+      }
+      this.inMemoryCache.set(normalized.id, normalized);
       await this.queuePersist();
     }
-    return Array.from(this.inMemoryCache.values());
+    return this.snapshot();
   }
 
   public async deletePlace(id: string): Promise<SavedPlace[]> {
     await this.initializeIfNeeded();
     this.inMemoryCache.delete(id);
     await this.queuePersist();
-    return Array.from(this.inMemoryCache.values());
+    return this.snapshot();
   }
 }
 

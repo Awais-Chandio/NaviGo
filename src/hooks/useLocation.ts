@@ -13,8 +13,8 @@ import { logger } from '../utils/logger';
 
 export function useLocation(isNavigating = false) {
   const [location, setLocation] = useState<LocationData>({
-    latitude: 25.396,
-    longitude: 68.3578,
+    latitude: LOCATION_CONFIG.DEFAULT_REGION.latitude,
+    longitude: LOCATION_CONFIG.DEFAULT_REGION.longitude,
     accuracy: 0,
     heading: 0,
   });
@@ -24,10 +24,12 @@ export function useLocation(isNavigating = false) {
   const [detectedCity, setDetectedCity] = useState<string>('');
   const [detectedCountryCode, setDetectedCountryCode] = useState<string>('');
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [hasLocationFix, setHasLocationFix] = useState<boolean>(false);
   const watchIdRef = useRef<number | null>(null);
   const isMountedRef = useRef<boolean>(true);
   const reverseAbortRef = useRef<AbortController | null>(null);
   const reverseSequenceRef = useRef<number>(0);
+  const lastAcceptedLocationRef = useRef<LocationData | null>(null);
   const lastGeocodedCoordsRef = useRef<{
     latitude: number;
     longitude: number;
@@ -88,6 +90,26 @@ export function useLocation(isNavigating = false) {
     [],
   );
 
+  const acceptLocation = useCallback(
+    (newLoc: LocationData) => {
+      if (!isMountedRef.current) return;
+      const timestamp = newLoc.timestamp || Date.now();
+      const previousTimestamp = lastAcceptedLocationRef.current?.timestamp || 0;
+
+      // The startup one-shot request and native watcher run concurrently. A
+      // delayed cached one-shot response must never replace a newer watch fix.
+      if (timestamp <= previousTimestamp) return;
+
+      const accepted = { ...newLoc, timestamp };
+      lastAcceptedLocationRef.current = accepted;
+      setLocation(accepted);
+      setHasLocationFix(true);
+      setLocationError(null);
+      updateAddressIfNeeded(accepted.latitude, accepted.longitude);
+    },
+    [updateAddressIfNeeded],
+  );
+
   const startTracking = useCallback(() => {
     if (watchIdRef.current !== null) {
       stopLocationWatch(watchIdRef.current);
@@ -100,27 +122,20 @@ export function useLocation(isNavigating = false) {
 
     watchIdRef.current = watchLocationUpdates(
       newLoc => {
-        if (!isMountedRef.current) return;
-        setLocation(prev => {
-          if (
-            prev &&
-            Math.abs(prev.latitude - newLoc.latitude) < 0.000005 &&
-            Math.abs(prev.longitude - newLoc.longitude) < 0.000005 &&
-            prev.heading === newLoc.heading &&
-            prev.accuracy === newLoc.accuracy &&
-            prev.speed === newLoc.speed &&
-            prev.timestamp === newLoc.timestamp
-          ) {
-            return prev;
-          }
-          return newLoc;
-        });
-        setLocationError(null);
-        updateAddressIfNeeded(newLoc.latitude, newLoc.longitude);
+        acceptLocation(newLoc);
       },
       err => {
         if (!isMountedRef.current) return;
         logger.warn('GPS', 'Location watch failed.', err);
+        // A stationary device may not emit another callback because the native
+        // distance filter suppresses unchanged fixes. Preserve the last known
+        // accurate fix for transient timeout/unavailable errors; only a
+        // permission revocation makes it unusable immediately.
+        if (err.type === 'PERMISSION_DENIED') {
+          setHasLocationFix(false);
+        } else if (lastAcceptedLocationRef.current) {
+          return;
+        }
         const errMsg =
           err && typeof err === 'object' && 'message' in err
             ? String((err as { message: unknown }).message)
@@ -135,19 +150,21 @@ export function useLocation(isNavigating = false) {
           : LOCATION_CONFIG.GPS_DISTANCE_FILTER_METERS,
       },
     );
-  }, [isNavigating, updateAddressIfNeeded]);
+  }, [acceptLocation, isNavigating]);
 
   const refreshLocation = useCallback(async () => {
     const loc = await getCurrentLocationFix();
     if (!isMountedRef.current) return;
     if (loc) {
-      setLocation(loc);
-      setLocationError(null);
-      updateAddressIfNeeded(loc.latitude, loc.longitude);
+      acceptLocation(loc);
     } else {
-      setLocationError('Location permission denied or GPS fix failed');
+      // A failed manual refresh must not discard a previously accepted fix.
+      if (!lastAcceptedLocationRef.current) {
+        setHasLocationFix(false);
+        setLocationError('Location permission denied or GPS fix failed');
+      }
     }
-  }, [updateAddressIfNeeded]);
+  }, [acceptLocation]);
 
   useEffect(() => {
     let isMounted = true;
@@ -158,6 +175,7 @@ export function useLocation(isNavigating = false) {
       if (!isMounted) return;
 
       if (!granted) {
+        setHasLocationFix(false);
         setLocationError('Location permission denied');
         return;
       }
@@ -189,6 +207,7 @@ export function useLocation(isNavigating = false) {
     detectedCity,
     detectedCountryCode,
     locationError,
+    hasLocationFix,
     refreshLocation,
   };
 }

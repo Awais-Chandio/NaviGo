@@ -142,7 +142,7 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
       region =>
         region.status === 'completed' &&
         region.isDownloaded &&
-        offlineMapManager.isPointInsideRegion(userLocation, region),
+        offlineMapManager.isPointInsideDownloadedBounds(userLocation, region),
     );
   }, [regions, userLocation]);
 

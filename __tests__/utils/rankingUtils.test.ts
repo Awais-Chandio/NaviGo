@@ -60,4 +60,26 @@ describe('rankingUtils', () => {
 
     expect(nearbyKarachi).toBeGreaterThan(hyderabadResult);
   });
+
+  it('does not let a generic title prefix outrank a materially closer match', () => {
+    const userLocation = { latitude: 25.396, longitude: 68.3578 };
+    const nearbyHospital = calculateRankingScore({
+      title: 'Civil Hospital Hyderabad',
+      subtitle: 'Hospital Road, Hyderabad',
+      latitude: 25.4054,
+      longitude: 68.361,
+      userLocation,
+      query: 'hospital',
+    });
+    const fartherParking = calculateRankingScore({
+      title: 'Hospital Parking',
+      subtitle: 'Jamshoro Road, Hyderabad',
+      latitude: 25.413,
+      longitude: 68.362,
+      userLocation,
+      query: 'hospital',
+    });
+
+    expect(nearbyHospital).toBeGreaterThan(fartherParking);
+  });
 });
