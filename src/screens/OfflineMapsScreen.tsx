@@ -230,6 +230,99 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
     [loadRegions],
   );
 
+  const handleRename = useCallback(
+    (regionId: string) => {
+      const region = offlineMapManager.getRegion(regionId);
+      if (!region) return;
+      Alert.prompt(
+        'Rename Offline Region',
+        'Enter a new name for this region:',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Save',
+            onPress: async (newName?: string) => {
+              if (newName && newName.trim()) {
+                try {
+                  await offlineMapManager.renameRegion(regionId, newName.trim());
+                  await loadRegions();
+                } catch (error) {
+                  Alert.alert(
+                    'Rename Failed',
+                    error instanceof Error ? error.message : 'Unable to rename region.',
+                  );
+                }
+              }
+            },
+          },
+        ],
+        'plain-text',
+        region.name,
+      );
+    },
+    [loadRegions],
+  );
+
+  const handleUpdate = useCallback(
+    async (regionId: string) => {
+      const region = offlineMapManager.getRegion(regionId);
+      Alert.alert(
+        'Update Offline Map',
+        `Re-download ${region?.name ?? 'this map'} to get the latest tiles and POIs?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Update',
+            onPress: async () => {
+              try {
+                await offlineMapManager.updateRegion(regionId, progress => {
+                  if (!isMountedRef.current) return;
+                  setActiveProgress(prev => ({
+                    ...prev,
+                    [regionId]: progress,
+                  }));
+                });
+                await loadRegions();
+              } catch (error) {
+                Alert.alert(
+                  'Update Failed',
+                  error instanceof Error ? error.message : 'Unable to update region.',
+                );
+              }
+            },
+          },
+        ],
+      );
+    },
+    [loadRegions],
+  );
+
+  const handleClearAllData = useCallback(async () => {
+    Alert.alert(
+      'Clear All Offline Data',
+      'This will permanently delete all downloaded offline maps, saved POIs, and temporary caches. Proceed?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await offlineMapManager.clearAllOfflineData();
+              await loadRegions();
+              Alert.alert('Cleared', 'All offline data has been removed.');
+            } catch (error) {
+              Alert.alert(
+                'Clear Failed',
+                error instanceof Error ? error.message : 'Unable to clear offline data.',
+              );
+            }
+          },
+        },
+      ],
+    );
+  }, [loadRegions]);
+
   const handleDownloadCurrentRegion = useCallback(async () => {
     if (!userLocation) {
       Alert.alert(
@@ -583,18 +676,27 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
             <Text style={styles.closeText}>✕</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Offline Maps</Text>
-          <TouchableOpacity
-            onPress={handleClearCache}
-            style={[
-              styles.cacheButton,
-              isClearingCache && styles.cacheButtonDisabled,
-            ]}
-            disabled={isClearingCache}
-          >
-            <Text style={styles.cacheButtonText}>
-              {isClearingCache ? 'Clearing…' : 'Clear Cache'}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={handleClearCache}
+              style={[
+                styles.cacheButton,
+                isClearingCache && styles.cacheButtonDisabled,
+              ]}
+              disabled={isClearingCache}
+            >
+              <Text style={styles.cacheButtonText}>
+                {isClearingCache ? 'Clearing…' : 'Cache'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleClearAllData}
+              style={styles.clearAllButton}
+            >
+              <Text style={styles.clearAllButtonText}>Clear All</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <FlatList
@@ -624,6 +726,8 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
               onSelect={handleSelectRegion}
               onDownload={handleDownload}
               onDelete={handleDelete}
+              onRename={handleRename}
+              onUpdate={handleUpdate}
             />
           )}
         />
@@ -660,6 +764,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#202124',
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   cacheButton: {
     paddingVertical: 4,
     paddingHorizontal: 8,
@@ -671,6 +780,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#1A73E8',
     fontWeight: '600',
+  },
+  clearAllButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: '#FCE8E6',
+    borderRadius: 8,
+  },
+  clearAllButtonText: {
+    fontSize: 12,
+    color: '#C5221F',
+    fontWeight: '700',
   },
   listContent: {
     padding: 16,

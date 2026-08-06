@@ -16,6 +16,7 @@ import {
   OfflineCoverageError,
   offlineMapManager,
 } from '../../src/services/offlineMapService';
+import { offlineDatabaseService } from '../../src/services/OfflineDatabaseService';
 
 describe('routingService', () => {
   test('parseOSRMSteps converts raw OSRM steps into user instructions', () => {
@@ -280,6 +281,7 @@ describe('routingService', () => {
       radiusKm: 10,
     });
     await offlineMapManager.downloadRegion(region.id);
+    await offlineDatabaseService.deleteRoutingGraphForRegion(region.id);
     connectivityService.setMode('offline');
 
     try {

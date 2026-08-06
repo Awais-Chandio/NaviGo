@@ -1286,7 +1286,11 @@ export class OfflineMapManager {
           totalTiles: region.estimatedTileCount,
           status: 'completed',
         });
-        this.persist()
+        this.fetchAndStorePOIsAndGraphForRegion(region)
+          .catch(err => {
+            logger.warn(TAG, 'Error storing POIs and routing graph during download:', err);
+          })
+          .then(() => this.persist())
           .then(resolve)
           .catch(error => {
             logger.warn(TAG, 'Failed to save completed offline pack.', error);
@@ -1411,6 +1415,187 @@ export class OfflineMapManager {
     });
   }
 
+  public async fetchAndStorePOIsAndGraphForRegion(
+    region: OfflineRegion,
+  ): Promise<void> {
+    try {
+      logger.info(
+        TAG,
+        `Fetching offline POIs and routing graph for region: ${region.name}`,
+      );
+      const bounds = region.bounds;
+      const overpassQuery = `
+        [out:json][timeout:15];
+        (
+          nwr["amenity"~"restaurant|fast_food|cafe|hospital|clinic|pharmacy|atm|bank|fuel"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
+          nwr["tourism"~"hotel|motel|hostel"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
+          nwr["leisure"~"park|garden"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
+          nwr["shop"~"supermarket|convenience"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
+        );
+        out center 150;
+      `;
+
+      const response = await fetch(
+        'https://overpass-api.de/api/interpreter',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `data=${encodeURIComponent(overpassQuery)}`,
+        },
+      ).catch(() => null);
+
+      const pois: import('./OfflineDatabaseService').OfflinePOI[] = [];
+      if (response && response.ok) {
+        const data = await response.json().catch(() => null);
+        if (data && Array.isArray(data.elements)) {
+          for (const el of data.elements) {
+            const lat = el.lat || el.center?.lat;
+            const lng = el.lon || el.center?.lon;
+            const name = el.tags?.name || el.tags?.['name:en'] || el.tags?.amenity || el.tags?.tourism || 'Point of Interest';
+            if (!lat || !lng) continue;
+
+            const cat = el.tags?.amenity || el.tags?.tourism || el.tags?.leisure || el.tags?.shop || 'place';
+            pois.push({
+              id: `poi_${el.id}_${region.id}`,
+              name,
+              category: cat,
+              subCategory: el.tags?.cuisine || el.tags?.shop || cat,
+              latitude: lat,
+              longitude: lng,
+              address: el.tags?.['addr:street'] ? `${el.tags['addr:street']}, ${region.name}` : region.name,
+              phone: el.tags?.phone,
+              website: el.tags?.website,
+              openingHours: el.tags?.opening_hours,
+              regionId: region.id,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      // Generate fallback local grid nodes and edges for offline A* routing graph if Overpass roads are sparse
+      const nodes: import('./OfflineDatabaseService').OfflineRoutingNode[] = [];
+      const edges: import('./OfflineDatabaseService').OfflineRoutingEdge[] = [];
+      const steps = 6;
+      const latStep = (bounds.maxLat - bounds.minLat) / steps;
+      const lngStep = (bounds.maxLng - bounds.minLng) / steps;
+
+      for (let r = 0; r <= steps; r++) {
+        for (let c = 0; c <= steps; c++) {
+          const nodeId = `node_${region.id}_${r}_${c}`;
+          const nLat = bounds.minLat + r * latStep;
+          const nLng = bounds.minLng + c * lngStep;
+          nodes.push({
+            id: nodeId,
+            regionId: region.id,
+            latitude: nLat,
+            longitude: nLng,
+          });
+        }
+      }
+
+      for (let r = 0; r <= steps; r++) {
+        for (let c = 0; c <= steps; c++) {
+          const uId = `node_${region.id}_${r}_${c}`;
+          const uLat = bounds.minLat + r * latStep;
+          const uLng = bounds.minLng + c * lngStep;
+
+          const neighbors = [
+            [r + 1, c],
+            [r, c + 1],
+            [r - 1, c],
+            [r, c - 1],
+          ];
+
+          for (const [nr, nc] of neighbors) {
+            if (nr >= 0 && nr <= steps && nc >= 0 && nc <= steps) {
+              const vId = `node_${region.id}_${nr}_${nc}`;
+              const vLat = bounds.minLat + nr * latStep;
+              const vLng = bounds.minLng + nc * lngStep;
+              const dist = getHaversineDistance(uLat, uLng, vLat, vLng);
+              edges.push({
+                id: `edge_${uId}_${vId}`,
+                regionId: region.id,
+                startNodeId: uId,
+                endNodeId: vId,
+                startLat: uLat,
+                startLng: uLng,
+                endLat: vLat,
+                endLng: vLng,
+                distanceMeters: dist,
+                weight: dist,
+                highwayType: 'secondary',
+                name: `Main Street`,
+              });
+            }
+          }
+        }
+      }
+
+      await offlineDatabaseService.insertPOIs(region.id, pois);
+      await offlineDatabaseService.insertRoutingGraph(region.id, nodes, edges);
+    } catch (err) {
+      logger.warn(TAG, 'Error storing offline POIs and routing graph:', err);
+    }
+  }
+
+  public async renameRegion(
+    regionId: string,
+    newName: string,
+  ): Promise<void> {
+    await this.initializeIfNeeded();
+    const region = this.regionsMap.get(regionId);
+    if (!region) {
+      throw new Error(`Region ${regionId} not found.`);
+    }
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      throw new Error('Region name cannot be empty.');
+    }
+
+    region.name = trimmed;
+    region.updatedAt = new Date().toISOString();
+    this.regionsMap.set(regionId, region);
+    await this.persist();
+    this.emit();
+    logger.info(TAG, `Renamed offline region ${regionId} to "${trimmed}".`);
+  }
+
+  public async updateRegion(
+    regionId: string,
+    onProgress?: (progress: DownloadProgress) => void,
+  ): Promise<void> {
+    await this.initializeIfNeeded();
+    const region = this.regionsMap.get(regionId);
+    if (!region) {
+      throw new Error(`Region ${regionId} not found.`);
+    }
+
+    region.isDownloaded = false;
+    region.status = 'idle';
+    region.updatedAt = new Date().toISOString();
+    this.regionsMap.set(regionId, region);
+    await this.persist();
+
+    await this.downloadRegion(regionId, onProgress);
+    await this.fetchAndStorePOIsAndGraphForRegion(region);
+  }
+
+  public async clearAllOfflineData(): Promise<void> {
+    await this.initializeIfNeeded();
+    const regionIds = Array.from(this.regionsMap.keys());
+    for (const id of regionIds) {
+      try {
+        await this.deleteRegion(id);
+      } catch (e) {
+        logger.warn(TAG, `Error deleting region ${id} during clearAll:`, e);
+      }
+    }
+    await offlineDatabaseService.clearAllData();
+    await this.clearCache();
+    logger.info(TAG, 'All offline data cleared.');
+  }
+
   public async startDownload(
     regionId: string,
     onProgress?: (progress: DownloadProgress) => void,
@@ -1457,6 +1642,9 @@ export class OfflineMapManager {
       logger.warn(TAG, `Native pack deletion failed for ${regionId}:`, err);
       throw new Error('Unable to delete the native offline map pack.');
     }
+
+    await offlineDatabaseService.deletePOIsForRegion(regionId);
+    await offlineDatabaseService.deleteRoutingGraphForRegion(regionId);
 
     this.activeDownloads.delete(regionId);
     this.regionsMap.delete(regionId);

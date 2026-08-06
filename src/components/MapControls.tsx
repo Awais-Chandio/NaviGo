@@ -102,6 +102,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     zIndex: 10,
+    elevation: 12,
     gap: 10,
     alignItems: 'center',
   },

@@ -22,6 +22,7 @@ import {
   RequestTimeoutError,
   waitForRetry,
 } from '../utils/networkUtils';
+import { offlineDatabaseService } from '../services/OfflineDatabaseService';
 
 const TAG = 'SearchRepository';
 const MAX_SEARCH_CACHE_ENTRIES = 100;
@@ -476,11 +477,77 @@ export class NominatimSearchRepository implements ISearchRepository {
           );
         });
 
+        if (cleanResults.length === 0) {
+          const offlinePois = await offlineDatabaseService.searchPOIs(
+            trimmedQuery,
+            userLoc?.latitude || 0,
+            userLoc?.longitude || 0,
+            limit,
+          );
+          if (offlinePois.length > 0) {
+            return offlinePois.map(poi => {
+              const distanceMeters = Math.round(
+                getHaversineDistance(
+                  userLoc?.latitude || 0,
+                  userLoc?.longitude || 0,
+                  poi.latitude,
+                  poi.longitude,
+                ),
+              );
+              return {
+                id: poi.id,
+                title: poi.name,
+                subtitle: poi.address,
+                latitude: poi.latitude,
+                longitude: poi.longitude,
+                displayName: `${poi.name}, ${poi.address}`,
+                distanceMeters,
+                formattedDistance: formatDistance(distanceMeters),
+                categoryIcon: '📍',
+                categoryName: poi.category,
+              };
+            });
+          }
+        }
+
         setBoundedCache(this.cache, cacheKey, {
           timestamp: Date.now(),
           data: cleanResults,
         });
         return cleanResults;
+      } catch (err) {
+        const userLoc = options?.userLocation;
+        const offlinePois = await offlineDatabaseService.searchPOIs(
+          trimmedQuery,
+          userLoc?.latitude || 0,
+          userLoc?.longitude || 0,
+          options?.limit || 15,
+        );
+        if (offlinePois.length > 0) {
+          return offlinePois.map(poi => {
+            const distanceMeters = Math.round(
+              getHaversineDistance(
+                userLoc?.latitude || 0,
+                userLoc?.longitude || 0,
+                poi.latitude,
+                poi.longitude,
+              ),
+            );
+            return {
+              id: poi.id,
+              title: poi.name,
+              subtitle: poi.address,
+              latitude: poi.latitude,
+              longitude: poi.longitude,
+              displayName: `${poi.name}, ${poi.address}`,
+              distanceMeters,
+              formattedDistance: formatDistance(distanceMeters),
+              categoryIcon: '📍',
+              categoryName: poi.category,
+            };
+          });
+        }
+        throw err;
       } finally {
         this.pendingRequests.delete(cacheKey);
         logger.performance(TAG, 'nominatim.search', startedAt, {
@@ -570,7 +637,27 @@ export class NominatimSearchRepository implements ISearchRepository {
       if (isCallerAbort(error, signal)) {
         throw error;
       }
-      return { displayName: 'Address unavailable', detectedArea: 'Current Location' };
+      try {
+        const offlinePois = await offlineDatabaseService.getPOIsByCategory(
+          'all',
+          latitude,
+          longitude,
+          10,
+        );
+        if (offlinePois.length > 0) {
+          const nearest = offlinePois[0];
+          return {
+            displayName: `${nearest.name}, ${nearest.address}`,
+            detectedArea: nearest.name,
+          };
+        }
+      } catch {
+        // ignore offline DB error
+      }
+      return {
+        displayName: `Offline Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`,
+        detectedArea: 'Offline Region',
+      };
     }
   }
 

@@ -18,6 +18,8 @@ interface OfflineMapCardProps {
   onSelect: (regionId: string) => void;
   onDownload: (regionId: string) => void;
   onDelete: (regionId: string) => void;
+  onRename?: (regionId: string) => void;
+  onUpdate?: (regionId: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -66,6 +68,8 @@ const OfflineMapCardComponent: React.FC<OfflineMapCardProps> = ({
     onSelect,
     onDownload,
     onDelete,
+    onRename,
+    onUpdate,
   }) => {
     const isDownloading =
       region.status === 'downloading' ||
@@ -184,7 +188,7 @@ const OfflineMapCardComponent: React.FC<OfflineMapCardProps> = ({
               onPress={() => onSelect(region.id)}
               activeOpacity={0.75}
             >
-              <Text style={styles.viewButtonText}>View Coverage</Text>
+              <Text style={styles.viewButtonText}>View</Text>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
@@ -201,10 +205,24 @@ const OfflineMapCardComponent: React.FC<OfflineMapCardProps> = ({
             </TouchableOpacity>
           )}
 
-          {isCompleted && (
-            <View style={styles.downloadedButton}>
-              <Text style={styles.downloadedButtonText}>{actionLabel}</Text>
-            </View>
+          {isCompleted && onUpdate && (
+            <TouchableOpacity
+              style={styles.updateButton}
+              onPress={() => onUpdate(region.id)}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.updateButtonText}>Update</Text>
+            </TouchableOpacity>
+          )}
+
+          {onRename && (
+            <TouchableOpacity
+              style={styles.renameButton}
+              onPress={() => onRename(region.id)}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.renameButtonText}>Rename</Text>
+            </TouchableOpacity>
           )}
 
           {!isDownloading && (
@@ -410,6 +428,30 @@ const styles = StyleSheet.create({
   },
   downloadedButtonText: {
     color: '#137333',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  updateButton: {
+    backgroundColor: '#E8F0FE',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  updateButtonText: {
+    color: '#1A73E8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  renameButton: {
+    backgroundColor: '#F1F3F4',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  renameButtonText: {
+    color: '#3C4043',
     fontSize: 12,
     fontWeight: '700',
   },

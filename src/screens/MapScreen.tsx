@@ -155,6 +155,33 @@ export default function MapScreen() {
   }, []);
 
   useEffect(() => {
+    if (!areOfflinePacksRestored || !hasValidLocationFix) return;
+    const regions = offlineMapManager.getRegions();
+    const hasCompletedRegion = regions.some(r => r.isDownloaded && r.status === 'completed');
+    if (!hasCompletedRegion && regions.length === 0) {
+      logger.info('MapScreen', 'No offline region found; auto-provisioning city map...');
+      offlineMapManager
+        .createRegionAroundPoint({
+          name: detectedCity || 'Hyderabad City',
+          center: { latitude: location.latitude, longitude: location.longitude },
+          radiusKm: 25,
+          minZoom: 10,
+          maxZoom: 16,
+        })
+        .then(newRegion => {
+          logger.info('MapScreen', `Downloading offline region: ${newRegion.name}`);
+          return offlineMapManager.downloadRegion(newRegion.id);
+        })
+        .then(() => {
+          logger.info('MapScreen', 'Offline city region download complete.');
+        })
+        .catch(err => {
+          logger.warn('MapScreen', 'Auto-provisioning offline region failed:', err);
+        });
+    }
+  }, [areOfflinePacksRestored, hasValidLocationFix, detectedCity, location.latitude, location.longitude]);
+
+  useEffect(() => {
     const unsubscribe = connectivityService.subscribe(() => {
       setMapStyleUrl(mapService.getActiveStyleUrl());
     });

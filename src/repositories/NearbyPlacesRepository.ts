@@ -8,6 +8,7 @@ import { connectivityService } from '../services/connectivityService';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { logger } from '../utils/logger';
 import { fetchWithTimeout, isCallerAbort } from '../utils/networkUtils';
+import { offlineDatabaseService } from '../services/OfflineDatabaseService';
 
 const TAG = 'NearbyPlacesService';
 const MAX_NEARBY_CACHE_ENTRIES = 50;
@@ -228,7 +229,34 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
       try {
         const isOnline = connectivityService.isOnlineMode();
         if (!isOnline) {
-          throw new Error('Nearby search is unavailable while offline.');
+          logger.info(TAG, `Offline mode detected: querying local SQLite POI database for category "${category}".`);
+          const offlinePois = await offlineDatabaseService.getPOIsByCategory(
+            category,
+            latitude,
+            longitude,
+          );
+          const results: NearbyPlace[] = offlinePois.map(poi => {
+            const distance = Math.round(
+              getHaversineDistance(
+                latitude,
+                longitude,
+                poi.latitude,
+                poi.longitude,
+              ),
+            );
+            return {
+              id: poi.id,
+              name: poi.name,
+              latitude: poi.latitude,
+              longitude: poi.longitude,
+              address: poi.address,
+              category: poi.category,
+              distance,
+              formattedDistance: formatDistance(distance),
+            };
+          });
+          results.sort((a, b) => a.distance - b.distance);
+          return results;
         }
 
         for (const currentRadiusMeters of radiusStepsMeters) {
