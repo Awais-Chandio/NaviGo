@@ -16,6 +16,10 @@ import {
 } from '../types/location';
 import { MAP_STYLES } from './mapService';
 import { offlineDatabaseService } from './OfflineDatabaseService';
+import {
+  fetchOfflinePOIs,
+  fetchOfflineRoutingGraph,
+} from './offlineRegionDataService';
 import { logger } from '../utils/logger';
 import { getHaversineDistance } from '../utils/locationUtils';
 
@@ -1418,124 +1422,49 @@ export class OfflineMapManager {
   public async fetchAndStorePOIsAndGraphForRegion(
     region: OfflineRegion,
   ): Promise<void> {
-    try {
-      logger.info(
-        TAG,
-        `Fetching offline POIs and routing graph for region: ${region.name}`,
-      );
-      const bounds = region.bounds;
-      const overpassQuery = `
-        [out:json][timeout:15];
-        (
-          nwr["amenity"~"restaurant|fast_food|cafe|hospital|clinic|pharmacy|atm|bank|fuel"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
-          nwr["tourism"~"hotel|motel|hostel"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
-          nwr["leisure"~"park|garden"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
-          nwr["shop"~"supermarket|convenience"](${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng});
+    logger.info(
+      TAG,
+      `Fetching offline POIs and real road graph for region: ${region.name}`,
+    );
+
+    const [poiResult, routingResult] = await Promise.all([
+      fetchOfflinePOIs(region).then(
+        value => ({ ok: true as const, value }),
+        reason => ({ ok: false as const, reason }),
+      ),
+      fetchOfflineRoutingGraph(region).then(
+        value => ({ ok: true as const, value }),
+        reason => ({ ok: false as const, reason }),
+      ),
+    ]);
+
+    if (poiResult.ok) {
+      await offlineDatabaseService.insertPOIs(region.id, poiResult.value);
+    } else {
+      logger.warn(TAG, 'Offline POI download failed.', poiResult.reason);
+    }
+
+    if (routingResult.ok) {
+      const { nodes, edges } = routingResult.value;
+      if (nodes.length > 0 && edges.length > 0) {
+        await offlineDatabaseService.insertRoutingGraph(
+          region.id,
+          nodes,
+          edges,
         );
-        out center 150;
-      `;
-
-      const response = await fetch(
-        'https://overpass-api.de/api/interpreter',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: `data=${encodeURIComponent(overpassQuery)}`,
-        },
-      ).catch(() => null);
-
-      const pois: import('./OfflineDatabaseService').OfflinePOI[] = [];
-      if (response && response.ok) {
-        const data = await response.json().catch(() => null);
-        if (data && Array.isArray(data.elements)) {
-          for (const el of data.elements) {
-            const lat = el.lat || el.center?.lat;
-            const lng = el.lon || el.center?.lon;
-            const name = el.tags?.name || el.tags?.['name:en'] || el.tags?.amenity || el.tags?.tourism || 'Point of Interest';
-            if (!lat || !lng) continue;
-
-            const cat = el.tags?.amenity || el.tags?.tourism || el.tags?.leisure || el.tags?.shop || 'place';
-            pois.push({
-              id: `poi_${el.id}_${region.id}`,
-              name,
-              category: cat,
-              subCategory: el.tags?.cuisine || el.tags?.shop || cat,
-              latitude: lat,
-              longitude: lng,
-              address: el.tags?.['addr:street'] ? `${el.tags['addr:street']}, ${region.name}` : region.name,
-              phone: el.tags?.phone,
-              website: el.tags?.website,
-              openingHours: el.tags?.opening_hours,
-              regionId: region.id,
-              createdAt: new Date().toISOString(),
-            });
-          }
-        }
+      } else {
+        await offlineDatabaseService.deleteRoutingGraphForRegion(region.id);
+        logger.warn(
+          TAG,
+          'No usable real roads were returned; offline routing remains unavailable for this region.',
+        );
       }
-
-      // Generate fallback local grid nodes and edges for offline A* routing graph if Overpass roads are sparse
-      const nodes: import('./OfflineDatabaseService').OfflineRoutingNode[] = [];
-      const edges: import('./OfflineDatabaseService').OfflineRoutingEdge[] = [];
-      const steps = 6;
-      const latStep = (bounds.maxLat - bounds.minLat) / steps;
-      const lngStep = (bounds.maxLng - bounds.minLng) / steps;
-
-      for (let r = 0; r <= steps; r++) {
-        for (let c = 0; c <= steps; c++) {
-          const nodeId = `node_${region.id}_${r}_${c}`;
-          const nLat = bounds.minLat + r * latStep;
-          const nLng = bounds.minLng + c * lngStep;
-          nodes.push({
-            id: nodeId,
-            regionId: region.id,
-            latitude: nLat,
-            longitude: nLng,
-          });
-        }
-      }
-
-      for (let r = 0; r <= steps; r++) {
-        for (let c = 0; c <= steps; c++) {
-          const uId = `node_${region.id}_${r}_${c}`;
-          const uLat = bounds.minLat + r * latStep;
-          const uLng = bounds.minLng + c * lngStep;
-
-          const neighbors = [
-            [r + 1, c],
-            [r, c + 1],
-            [r - 1, c],
-            [r, c - 1],
-          ];
-
-          for (const [nr, nc] of neighbors) {
-            if (nr >= 0 && nr <= steps && nc >= 0 && nc <= steps) {
-              const vId = `node_${region.id}_${nr}_${nc}`;
-              const vLat = bounds.minLat + nr * latStep;
-              const vLng = bounds.minLng + nc * lngStep;
-              const dist = getHaversineDistance(uLat, uLng, vLat, vLng);
-              edges.push({
-                id: `edge_${uId}_${vId}`,
-                regionId: region.id,
-                startNodeId: uId,
-                endNodeId: vId,
-                startLat: uLat,
-                startLng: uLng,
-                endLat: vLat,
-                endLng: vLng,
-                distanceMeters: dist,
-                weight: dist,
-                highwayType: 'secondary',
-                name: `Main Street`,
-              });
-            }
-          }
-        }
-      }
-
-      await offlineDatabaseService.insertPOIs(region.id, pois);
-      await offlineDatabaseService.insertRoutingGraph(region.id, nodes, edges);
-    } catch (err) {
-      logger.warn(TAG, 'Error storing offline POIs and routing graph:', err);
+    } else {
+      logger.warn(
+        TAG,
+        'Offline road download failed; preserving any previously installed real graph and refusing to create a synthetic one.',
+        routingResult.reason,
+      );
     }
   }
 

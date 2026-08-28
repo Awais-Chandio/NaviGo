@@ -48,7 +48,7 @@ const NearbyPlaceItemCard = React.memo(({
           {item.name}
         </Text>
         <Text style={styles.distanceText}>
-          {item.formattedDistance || formatDistance(item.distance)} away
+          {formatDistance(item.distance)} away
         </Text>
         {!!item.address && (
           <Text style={styles.addressText} numberOfLines={1}>

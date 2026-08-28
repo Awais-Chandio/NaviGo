@@ -5,6 +5,7 @@ import {
   formatDuration,
   calculateBoundingBox,
   calculateRouteProgress,
+  getRemainingRouteCoordinates,
   calculateDynamicETA,
   getClosestPointOnSegment,
   isGPSJump,
@@ -64,6 +65,20 @@ describe('locationUtils', () => {
     expect(res.progressPct).toBe(0);
     expect(res.distanceTraveled).toBe(0);
     expect(res.remainingDistance).toBeGreaterThan(0);
+  });
+
+  test('getRemainingRouteCoordinates removes the completed blue route section', () => {
+    const coordinates: [number, number][] = [
+      [68, 25],
+      [68, 25.01],
+      [68, 25.02],
+    ];
+
+    expect(getRemainingRouteCoordinates(coordinates, 0)).toEqual(coordinates);
+    const remaining = getRemainingRouteCoordinates(coordinates, 50);
+    expect(remaining[0][1]).toBeCloseTo(25.01, 3);
+    expect(remaining[remaining.length - 1]).toEqual([68, 25.02]);
+    expect(getRemainingRouteCoordinates(coordinates, 100)).toEqual([]);
   });
 
   test('calculateRouteProgress scales progress to the selected route distance', () => {

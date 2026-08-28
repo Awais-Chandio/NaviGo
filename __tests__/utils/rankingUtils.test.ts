@@ -1,6 +1,17 @@
-import { calculateRankingScore, isBrandedPlace, hasCompleteMetadata } from '../../src/utils/rankingUtils';
+import {
+  calculateRankingScore,
+  calculateTextMatchScore,
+  isBrandedPlace,
+  hasCompleteMetadata,
+} from '../../src/utils/rankingUtils';
 
 describe('rankingUtils', () => {
+  it('matches autocomplete characters at the start of any title word', () => {
+    expect(calculateTextMatchScore('The Grill Town', 'Hyderabad', 'Gri')).toBeGreaterThan(0);
+    expect(calculateTextMatchScore('Grocery Market', 'Hyderabad', 'Gri')).toBe(0);
+    expect(calculateTextMatchScore('Grill Town', 'Hyderabad', 'gri to')).toBeGreaterThan(0);
+  });
+
   it('identifies branded places accurately', () => {
     expect(isBrandedPlace('Shell Petrol Pump')).toBe(true);
     expect(isBrandedPlace('McDonalds Fast Food')).toBe(true);

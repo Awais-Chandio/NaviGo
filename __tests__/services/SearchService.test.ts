@@ -1,5 +1,7 @@
 import { searchService } from '../../src/services/searchService';
 import { normalizeDetectedCity } from '../../src/repositories/SearchRepository';
+import { connectivityService } from '../../src/services/connectivityService';
+import { offlineDatabaseService } from '../../src/services/OfflineDatabaseService';
 
 describe('SearchService', () => {
   it('normalizes a taluka result to its parent city district', () => {
@@ -78,6 +80,68 @@ describe('SearchService', () => {
       expect(results.length).toBe(1);
       expect(results[0].title).toBe('St Elizabeth Hospital');
       expect(results[0].subtitle).toContain('Hyderabad');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('matches partial place-name characters and keeps current-city results', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          type: 'FeatureCollection',
+          features: [
+            {
+              geometry: { coordinates: [68.359, 25.398] },
+              properties: {
+                osm_id: 2001,
+                name: 'The Grill Town',
+                district: 'Qasimabad',
+                city: 'Hyderabad',
+                country: 'Pakistan',
+                countrycode: 'PK',
+                osm_key: 'amenity',
+                osm_value: 'restaurant',
+              },
+            },
+            {
+              geometry: { coordinates: [67.0011, 24.8607] },
+              properties: {
+                osm_id: 2002,
+                name: 'Grill Town Karachi',
+                city: 'Karachi',
+                country: 'Pakistan',
+                countrycode: 'PK',
+              },
+            },
+            {
+              geometry: { coordinates: [68.358, 25.397] },
+              properties: {
+                osm_id: 2003,
+                name: 'Grocery Market',
+                city: 'Hyderabad',
+                country: 'Pakistan',
+                countrycode: 'PK',
+              },
+            },
+          ],
+        }),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock;
+
+    try {
+      const results = await searchService.searchPlaces('Gri', {
+        userLocation: { latitude: 25.396, longitude: 68.3578 },
+        countryCode: 'PK',
+      });
+
+      expect(results.map(result => result.title)).toEqual(['The Grill Town']);
+      const requestedUrl = String(fetchMock.mock.calls[0][0]);
+      expect(requestedUrl).toContain('&lat=25.396&lon=68.3578');
+      expect(requestedUrl).toContain('&bbox=');
+      expect(requestedUrl).not.toContain('bbox=60.87,23.63,77.84,37.10');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -209,6 +273,39 @@ describe('SearchService', () => {
       expect(results).toHaveLength(1);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('searches downloaded POIs immediately while offline without calling Photon', async () => {
+    await offlineDatabaseService.insertPOIs('offline_search', [
+      {
+        id: 'offline_hospital',
+        name: 'Offline City Hospital',
+        category: 'hospital',
+        latitude: 25.396,
+        longitude: 68.3578,
+        address: 'Main Road, Hyderabad',
+        regionId: 'offline_search',
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    const originalFetch = globalThis.fetch;
+    const fetchMock = jest.fn();
+    globalThis.fetch = fetchMock as typeof fetch;
+    connectivityService.setMode('offline');
+
+    try {
+      const results = await searchService.searchPlaces('City Hospital', {
+        userLocation: { latitude: 25.396, longitude: 68.3578 },
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].title).toBe('Offline City Hospital');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      connectivityService.setMode('online');
+      globalThis.fetch = originalFetch;
+      await offlineDatabaseService.deletePOIsForRegion('offline_search');
     }
   });
 });

@@ -20,6 +20,32 @@ import { LOCATION_CONFIG } from '../config/locationConfig';
 
 export { CATEGORY_MAP };
 
+/** Recalculate display distances from the latest accepted GPS fix. */
+export function recalculateNearbyDistances(
+  places: NearbyPlace[],
+  latitude: number,
+  longitude: number,
+): NearbyPlace[] {
+  if (!isValidCoordinate(latitude, longitude, true)) return places;
+  return places
+    .map(place => {
+      const distance = Math.round(
+        getHaversineDistance(
+          latitude,
+          longitude,
+          place.latitude,
+          place.longitude,
+        ),
+      );
+      return {
+        ...place,
+        distance,
+        formattedDistance: formatDistance(distance),
+      };
+    })
+    .sort((first, second) => first.distance - second.distance);
+}
+
 interface NearbyFallbackSearchProvider {
   searchPlaces(
     query: string,

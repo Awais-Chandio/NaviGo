@@ -8,6 +8,56 @@ import {
 import { offlineDatabaseService } from './OfflineDatabaseService';
 
 const TAG = 'OfflineRoutingService';
+const MAX_ENDPOINT_SNAP_DISTANCE_METERS = 2000;
+
+interface QueueEntry {
+  nodeId: string;
+  score: number;
+}
+
+class MinPriorityQueue {
+  private heap: QueueEntry[] = [];
+
+  public get size(): number {
+    return this.heap.length;
+  }
+
+  public push(entry: QueueEntry): void {
+    this.heap.push(entry);
+    let index = this.heap.length - 1;
+    while (index > 0) {
+      const parentIndex = Math.floor((index - 1) / 2);
+      if (this.heap[parentIndex].score <= entry.score) break;
+      this.heap[index] = this.heap[parentIndex];
+      index = parentIndex;
+    }
+    this.heap[index] = entry;
+  }
+
+  public pop(): QueueEntry | null {
+    if (this.heap.length === 0) return null;
+    const first = this.heap[0];
+    const last = this.heap.pop()!;
+    if (this.heap.length === 0) return first;
+
+    let index = 0;
+    while (true) {
+      const leftIndex = index * 2 + 1;
+      const rightIndex = leftIndex + 1;
+      if (leftIndex >= this.heap.length) break;
+      const smallerChildIndex =
+        rightIndex < this.heap.length &&
+        this.heap[rightIndex].score < this.heap[leftIndex].score
+          ? rightIndex
+          : leftIndex;
+      if (this.heap[smallerChildIndex].score >= last.score) break;
+      this.heap[index] = this.heap[smallerChildIndex];
+      index = smallerChildIndex;
+    }
+    this.heap[index] = last;
+    return first;
+  }
+}
 
 export class OfflineRoutingService {
   public isAvailable(): boolean {
@@ -66,7 +116,12 @@ export class OfflineRoutingService {
       }
     }
 
-    if (!startNodeId || !endNodeId || minStartDist > 30000 || minEndDist > 30000) {
+    if (
+      !startNodeId ||
+      !endNodeId ||
+      minStartDist > MAX_ENDPOINT_SNAP_DISTANCE_METERS ||
+      minEndDist > MAX_ENDPOINT_SNAP_DISTANCE_METERS
+    ) {
       logger.warn(
         TAG,
         'Start or destination is too far from any downloaded offline road graph.',
@@ -82,10 +137,11 @@ export class OfflineRoutingService {
       { parentNodeId: string; edgeName?: string; dist: number }
     >();
 
-    const openSet = new Set<string>();
+    const openQueue = new MinPriorityQueue();
 
     gScore.set(startNodeId, 0);
-    const targetNode = nodes.find(n => n.id === endNodeId)!;
+    const targetNode = offlineDatabaseService.getRoutingNode(endNodeId);
+    if (!targetNode) return null;
     const initialH = getHaversineDistance(
       startLat,
       startLng,
@@ -93,21 +149,13 @@ export class OfflineRoutingService {
       targetNode.longitude,
     );
     fScore.set(startNodeId, initialH);
-    openSet.add(startNodeId);
+    openQueue.push({ nodeId: startNodeId, score: initialH });
 
-    while (openSet.size > 0) {
-      let current: string | null = null;
-      let lowestF = Infinity;
-
-      for (const nodeId of openSet) {
-        const score = fScore.get(nodeId) ?? Infinity;
-        if (score < lowestF) {
-          lowestF = score;
-          current = nodeId;
-        }
-      }
-
-      if (!current) break;
+    while (openQueue.size > 0) {
+      const entry = openQueue.pop();
+      if (!entry) break;
+      const current = entry.nodeId;
+      if (entry.score !== fScore.get(current)) continue;
 
       if (current === endNodeId) {
         // Path found! Construct route details.
@@ -120,32 +168,24 @@ export class OfflineRoutingService {
           curr = prev.parentNodeId;
         }
 
-        const nodeMap = new Map(nodes.map(n => [n.id, n]));
         const routeCoords: [number, number][] = [[startLng, startLat]];
-        let totalDistMeters = 0;
 
         for (let i = 0; i < pathNodeIds.length; i++) {
-          const n = nodeMap.get(pathNodeIds[i]);
+          const n = offlineDatabaseService.getRoutingNode(pathNodeIds[i]);
           if (n) {
             routeCoords.push([n.longitude, n.latitude]);
-            if (i > 0) {
-              const prevN = nodeMap.get(pathNodeIds[i - 1])!;
-              totalDistMeters += getHaversineDistance(
-                prevN.latitude,
-                prevN.longitude,
-                n.latitude,
-                n.longitude,
-              );
-            }
           }
         }
         routeCoords.push([endLng, endLat]);
-        totalDistMeters += getHaversineDistance(
-          routeCoords[routeCoords.length - 2][1],
-          routeCoords[routeCoords.length - 2][0],
-          endLat,
-          endLng,
-        );
+        let totalDistMeters = 0;
+        for (let index = 1; index < routeCoords.length; index++) {
+          totalDistMeters += getHaversineDistance(
+            routeCoords[index - 1][1],
+            routeCoords[index - 1][0],
+            routeCoords[index][1],
+            routeCoords[index][0],
+          );
+        }
 
         // Average driving speed ~40 km/h (11.1 m/s)
         const durationSeconds = Math.max(10, Math.round(totalDistMeters / 11.1));
@@ -184,7 +224,6 @@ export class OfflineRoutingService {
         };
       }
 
-      openSet.delete(current);
       const outgoingEdges = offlineDatabaseService.getRoutingEdgesForNode(current);
 
       for (const edge of outgoingEdges) {
@@ -199,7 +238,7 @@ export class OfflineRoutingService {
           });
           gScore.set(neighborId, tentativeG);
 
-          const neighborNode = nodes.find(n => n.id === neighborId);
+          const neighborNode = offlineDatabaseService.getRoutingNode(neighborId);
           const h = neighborNode
             ? getHaversineDistance(
                 neighborNode.latitude,
@@ -208,8 +247,9 @@ export class OfflineRoutingService {
                 targetNode.longitude,
               )
             : 0;
-          fScore.set(neighborId, tentativeG + h);
-          openSet.add(neighborId);
+          const nextScore = tentativeG + h;
+          fScore.set(neighborId, nextScore);
+          openQueue.push({ nodeId: neighborId, score: nextScore });
         }
       }
     }
@@ -221,4 +261,3 @@ export class OfflineRoutingService {
 
 export const offlineRoutingService = new OfflineRoutingService();
 export default offlineRoutingService;
-

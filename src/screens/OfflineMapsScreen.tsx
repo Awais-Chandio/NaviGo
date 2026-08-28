@@ -29,6 +29,7 @@ import { OfflineMapCard } from '../components/OfflineMapCard';
 import { OfflineCoverageMap } from '../components/OfflineCoverageMap';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { logger } from '../utils/logger';
+import { offlineDatabaseService } from '../services/OfflineDatabaseService';
 import {
   cityMapService,
   type CityDownloadPlan,
@@ -135,6 +136,9 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
     () => regions.find(region => region.id === selectedRegionId) ?? null,
     [regions, selectedRegionId],
   );
+  const isSelectedRegionRoutingReady = selectedRegion
+    ? offlineDatabaseService.hasRoutingDataForRegion(selectedRegion.id)
+    : false;
 
   const matchingCurrentRegions = useMemo(() => {
     if (!userLocation) return [];
@@ -652,10 +656,11 @@ export const OfflineMapsScreen: React.FC<OfflineMapsScreenProps> = ({
           Offline navigation coverage
         </Text>
         <Text style={styles.navigationNoticeText}>
-          Before an already-planned route starts offline, NaviGo checks the
-          current location, destination, and route against downloaded coverage.
-          Creating a new route or rerouting without internet still requires an
-          offline routing engine.
+          {selectedRegion?.isDownloaded && isSelectedRegionRoutingReady
+            ? 'Real OpenStreetMap road data is installed for this region. New offline routes are allowed only when the current location, destination, and complete route stay inside downloaded coverage.'
+            : selectedRegion?.isDownloaded
+              ? 'The map is ready for offline viewing and saved-place search, but real road data was not available. Existing routes can still be tracked with GPS; new offline routes and rerouting require internet.'
+              : 'Download a region first. NaviGo never creates a synthetic straight-line or grid route when real offline road data is unavailable.'}
         </Text>
       </View>
 

@@ -45,6 +45,8 @@ export interface SearchOptions {
     longitude: number;
   };
   countryCode?: string;
+  /** Optional local search radius used by category and autocomplete flows. */
+  radiusMeters?: number;
   limit?: number;
   signal?: AbortSignal;
 }

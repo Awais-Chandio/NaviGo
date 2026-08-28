@@ -665,7 +665,22 @@ export class RoutingService {
     if (routes.length === 0) {
       throw new OfflineRoutingUnavailableError();
     }
-    return routes;
+    const coveredRoutes = routes.filter(route =>
+      offlineMapManager.validateNavigationCoverage(
+        { latitude: startLat, longitude: startLng },
+        { latitude: endLat, longitude: endLng },
+        route.coordinates,
+      ).isValid,
+    );
+    if (coveredRoutes.length === 0) {
+      offlineMapManager.assertNavigationCoverage(
+        { latitude: startLat, longitude: startLng },
+        { latitude: endLat, longitude: endLng },
+        routes[0].coordinates,
+      );
+      throw new OfflineRoutingUnavailableError();
+    }
+    return coveredRoutes;
   }
 }
 

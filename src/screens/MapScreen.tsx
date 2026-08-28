@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useCallback, useState } from 'react';
+import React, {
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -36,7 +42,10 @@ import { OfflineMapsScreen } from './OfflineMapsScreen';
 
 import { SearchPlaceItem } from '../services/searchService';
 import { mapService } from '../services/mapService';
-import { nearbyPlacesService } from '../services/NearbyPlacesService';
+import {
+  nearbyPlacesService,
+  recalculateNearbyDistances,
+} from '../services/NearbyPlacesService';
 import { geocodingService } from '../services/geocodingService';
 import { savedPlacesService } from '../services/SavedPlacesService';
 import { NEARBY_CATEGORIES } from '../config/nearbyCategories';
@@ -44,6 +53,7 @@ import { LOCATION_CONFIG } from '../config/locationConfig';
 import { NearbyCategory, NearbyPlace, SavedPlace } from '../types/places';
 import {
   calculateBoundingBox,
+  getRemainingRouteCoordinates,
   getHaversineDistance,
   isValidCoordinate,
 } from '../utils/locationUtils';
@@ -101,6 +111,7 @@ export default function MapScreen() {
     currentSpeed,
     currentRoad,
     matchedLocation,
+    progressPct,
     nextInstruction,
     isMuted,
     selectDestination,
@@ -153,33 +164,6 @@ export default function MapScreen() {
       isMounted = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (!areOfflinePacksRestored || !hasValidLocationFix) return;
-    const regions = offlineMapManager.getRegions();
-    const hasCompletedRegion = regions.some(r => r.isDownloaded && r.status === 'completed');
-    if (!hasCompletedRegion && regions.length === 0) {
-      logger.info('MapScreen', 'No offline region found; auto-provisioning city map...');
-      offlineMapManager
-        .createRegionAroundPoint({
-          name: detectedCity || 'Hyderabad City',
-          center: { latitude: location.latitude, longitude: location.longitude },
-          radiusKm: 25,
-          minZoom: 10,
-          maxZoom: 16,
-        })
-        .then(newRegion => {
-          logger.info('MapScreen', `Downloading offline region: ${newRegion.name}`);
-          return offlineMapManager.downloadRegion(newRegion.id);
-        })
-        .then(() => {
-          logger.info('MapScreen', 'Offline city region download complete.');
-        })
-        .catch(err => {
-          logger.warn('MapScreen', 'Auto-provisioning offline region failed:', err);
-        });
-    }
-  }, [areOfflinePacksRestored, hasValidLocationFix, detectedCity, location.latitude, location.longitude]);
 
   useEffect(() => {
     const unsubscribe = connectivityService.subscribe(() => {
@@ -315,6 +299,30 @@ export default function MapScreen() {
     isNavigating && matchedLocation && matchedLocation.confidence > 0.4
       ? matchedLocation.longitude
       : location.longitude;
+
+  const displayedRouteCoordinates = useMemo(() => {
+    if (!routeDetails) return [];
+    return navigationState === 'navigating'
+      ? getRemainingRouteCoordinates(routeDetails.coordinates, progressPct)
+      : routeDetails.coordinates;
+  }, [navigationState, progressPct, routeDetails]);
+
+  const displayedNearbyPlaces = useMemo(
+    () =>
+      hasValidLocationFix
+        ? recalculateNearbyDistances(
+            nearbyPlaces,
+            location.latitude,
+            location.longitude,
+          )
+        : nearbyPlaces,
+    [
+      hasValidLocationFix,
+      location.latitude,
+      location.longitude,
+      nearbyPlaces,
+    ],
+  );
 
   useEffect(() => {
     if (hasValidLocationFix) {
@@ -873,11 +881,11 @@ export default function MapScreen() {
             />
           )}
 
-          {routeDetails && (
+          {routeDetails && displayedRouteCoordinates.length >= 2 && (
             <>
-              <RouteLine coordinates={routeDetails.coordinates} />
+              <RouteLine coordinates={displayedRouteCoordinates} />
               <TrafficLine
-                coordinates={routeDetails.coordinates}
+                coordinates={displayedRouteCoordinates}
                 visible={
                   travelMode !== 'walking' &&
                   (navigationState === 'navigating' ||
@@ -911,7 +919,7 @@ export default function MapScreen() {
             />
           )}
 
-          {nearbyPlaces.map(place => (
+          {displayedNearbyPlaces.map(place => (
             <ViewAnnotation
               key={place.id}
               id={`nearby-place-${place.id}`}
@@ -958,7 +966,7 @@ export default function MapScreen() {
           categoryTitle={activeCategoryConfig.title}
           categoryIcon={activeCategoryConfig.icon}
           detectedArea={detectedArea}
-          places={nearbyPlaces}
+          places={displayedNearbyPlaces}
           isLoading={isLoadingNearby}
           selectedPlaceId={selectedNearbyPlaceId}
           error={nearbyError}

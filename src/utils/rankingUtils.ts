@@ -16,6 +16,67 @@ export interface PlaceRankingInput {
   extratags?: Record<string, string>;
   tags?: Record<string, string>;
   query?: string;
+  searchMetadata?: string;
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/**
+ * Scores autocomplete relevance using the characters the user has typed.
+ * Word-prefix matching makes short queries such as "gri" match both
+ * "Grill Town" and "The Grill Town" without admitting unrelated results.
+ */
+export function calculateTextMatchScore(
+  title: string,
+  subtitle: string | undefined,
+  query: string | undefined,
+  searchMetadata = '',
+): number {
+  const normalizedQuery = normalizeSearchText(query || '');
+  if (!normalizedQuery) return 0;
+
+  const normalizedTitle = normalizeSearchText(title);
+  const normalizedSubtitle = normalizeSearchText(subtitle || '');
+  const normalizedMetadata = normalizeSearchText(searchMetadata);
+  const queryTokens = normalizedQuery.split(' ').filter(Boolean);
+  const titleTokens = normalizedTitle.split(' ').filter(Boolean);
+  const subtitleTokens = normalizedSubtitle.split(' ').filter(Boolean);
+  const metadataTokens = normalizedMetadata.split(' ').filter(Boolean);
+  const matchingTokenCount = (
+    candidateTokens: string[],
+  ): number =>
+    queryTokens.filter(queryToken =>
+      candidateTokens.some(candidateToken =>
+        candidateToken.startsWith(queryToken),
+      ),
+    ).length;
+  const allQueryTokensMatch = (
+    candidateTokens: string[],
+  ): boolean =>
+    matchingTokenCount(candidateTokens) === queryTokens.length;
+  const nearlyAllQueryTokensMatch = (
+    candidateTokens: string[],
+  ): boolean =>
+    queryTokens.length > 1 &&
+    matchingTokenCount(candidateTokens) >= queryTokens.length - 1;
+
+  if (normalizedTitle === normalizedQuery) return 500;
+  if (normalizedTitle.startsWith(normalizedQuery)) return 450;
+  if (allQueryTokensMatch(titleTokens)) return 400;
+  if (normalizedTitle.includes(normalizedQuery)) return 350;
+  if (nearlyAllQueryTokensMatch(titleTokens)) return 300;
+  if (normalizedSubtitle.startsWith(normalizedQuery)) return 220;
+  if (allQueryTokensMatch(subtitleTokens)) return 180;
+  if (normalizedSubtitle.includes(normalizedQuery)) return 140;
+  if (allQueryTokensMatch(metadataTokens)) return 100;
+  if (normalizedMetadata.includes(normalizedQuery)) return 80;
+  return 0;
 }
 
 const BRAND_KEYWORDS = [
@@ -103,6 +164,7 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
     extratags,
     tags,
     query,
+    searchMetadata,
   } = input;
 
   let distanceScore = 0;
@@ -148,20 +210,12 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
     : 25;
 
   // Text match score (when searching with query)
-  let textMatchScore = 0;
-  if (query && query.trim().length > 0) {
-    const qLower = query.trim().toLowerCase();
-    const titleLower = title.toLowerCase();
-    const subLower = (subtitle || '').toLowerCase();
-
-    if (titleLower.startsWith(qLower)) {
-      textMatchScore = 150;
-    } else if (titleLower.includes(qLower)) {
-      textMatchScore = 80;
-    } else if (subLower.includes(qLower)) {
-      textMatchScore = 40;
-    }
-  }
+  const textMatchScore = calculateTextMatchScore(
+    title,
+    subtitle,
+    query,
+    searchMetadata,
+  );
 
   // Penalty for generic names
   let genericPenalty = 0;

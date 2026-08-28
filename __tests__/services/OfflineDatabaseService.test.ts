@@ -1,4 +1,11 @@
-import { offlineDatabaseService, OfflinePOI, OfflineRoutingNode, OfflineRoutingEdge } from '../../src/services/OfflineDatabaseService';
+import {
+  OfflineDatabaseService,
+  offlineDatabaseService,
+  OfflinePOI,
+  OfflineRoutingNode,
+  OfflineRoutingEdge,
+} from '../../src/services/OfflineDatabaseService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 describe('OfflineDatabaseService', () => {
   beforeEach(async () => {
@@ -8,6 +15,39 @@ describe('OfflineDatabaseService', () => {
   test('initializes database and reports ready status', async () => {
     await offlineDatabaseService.initializeDatabase();
     expect(offlineDatabaseService.isReady()).toBe(true);
+  });
+
+  test('migrates v3 by removing only legacy routing graph records', async () => {
+    const getItemMock = jest.mocked(AsyncStorage.getItem);
+    const getAllKeysMock = jest.mocked(AsyncStorage.getAllKeys);
+    jest.mocked(AsyncStorage.removeItem).mockClear();
+    jest.mocked(AsyncStorage.setItem).mockClear();
+    getItemMock.mockResolvedValueOnce('3');
+    getAllKeysMock
+      .mockResolvedValueOnce([
+        '@navigo_offline_pois_region_1',
+        '@navigo_offline_rnodes_region_1',
+        '@navigo_offline_redges_region_1',
+      ])
+      .mockResolvedValueOnce(['@navigo_offline_pois_region_1'])
+      .mockResolvedValueOnce([]);
+
+    const service = new OfflineDatabaseService();
+    await service.initializeDatabase();
+
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith(
+      '@navigo_offline_rnodes_region_1',
+    );
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith(
+      '@navigo_offline_redges_region_1',
+    );
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith(
+      '@navigo_offline_pois_region_1',
+    );
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      '@navigo_offline_db_version',
+      '4',
+    );
   });
 
   test('inserts and queries offline POIs by category and distance', async () => {
@@ -92,5 +132,79 @@ describe('OfflineDatabaseService', () => {
 
     const results = await offlineDatabaseService.getPOIsByCategory('fuel', 25.396, 68.358);
     expect(results.length).toBe(0);
+  });
+
+  test('replaces stale region data when an offline map is updated', async () => {
+    await offlineDatabaseService.insertPOIs('region_update', [
+      {
+        id: 'old_poi',
+        name: 'Old Place',
+        category: 'cafe',
+        latitude: 25.396,
+        longitude: 68.358,
+        address: 'Old Road',
+        regionId: 'region_update',
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    await offlineDatabaseService.insertPOIs('region_update', [
+      {
+        id: 'new_poi',
+        name: 'New Place',
+        category: 'hospital',
+        latitude: 25.397,
+        longitude: 68.359,
+        address: 'New Road',
+        regionId: 'region_update',
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+
+    expect(
+      await offlineDatabaseService.searchPOIs(
+        'Old Place',
+        25.396,
+        68.358,
+      ),
+    ).toHaveLength(0);
+    expect(
+      await offlineDatabaseService.searchPOIs(
+        'New Place',
+        25.396,
+        68.358,
+      ),
+    ).toHaveLength(1);
+
+    const firstNodes: OfflineRoutingNode[] = [
+      {
+        id: 'old_node',
+        regionId: 'region_update',
+        latitude: 25.396,
+        longitude: 68.358,
+      },
+    ];
+    const replacementNodes: OfflineRoutingNode[] = [
+      {
+        id: 'new_node',
+        regionId: 'region_update',
+        latitude: 25.397,
+        longitude: 68.359,
+      },
+    ];
+    await offlineDatabaseService.insertRoutingGraph(
+      'region_update',
+      firstNodes,
+      [],
+    );
+    await offlineDatabaseService.insertRoutingGraph(
+      'region_update',
+      replacementNodes,
+      [],
+    );
+
+    expect(offlineDatabaseService.getRoutingNode('old_node')).toBeNull();
+    expect(offlineDatabaseService.getRoutingNode('new_node')).toEqual(
+      replacementNodes[0],
+    );
   });
 });

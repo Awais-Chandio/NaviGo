@@ -10,7 +10,10 @@ import {
   formatDistance,
   isValidCoordinate,
 } from '../utils/locationUtils';
-import { calculateRankingScore } from '../utils/rankingUtils';
+import {
+  calculateRankingScore,
+  calculateTextMatchScore,
+} from '../utils/rankingUtils';
 import { storageService } from '../services/storageService';
 import { savedPlacesService } from '../services/SavedPlacesService';
 import { nearbyPlacesService } from '../services/NearbyPlacesService';
@@ -23,10 +26,12 @@ import {
   waitForRetry,
 } from '../utils/networkUtils';
 import { offlineDatabaseService } from '../services/OfflineDatabaseService';
+import { connectivityService } from '../services/connectivityService';
 
 const TAG = 'SearchRepository';
 const MAX_SEARCH_CACHE_ENTRIES = 100;
 const AUTOCOMPLETE_TIMEOUT_MS = 5000;
+const DEFAULT_LOCAL_AUTOCOMPLETE_RADIUS_METERS = 50000;
 
 export interface ISearchRepository {
   searchPlaces(query: string, options?: SearchOptions): Promise<SearchPlaceItem[]>;
@@ -228,6 +233,81 @@ function setBoundedCache<T>(
   cache.set(key, entry);
 }
 
+async function searchStoredOfflinePOIs(
+  query: string,
+  options?: SearchOptions,
+): Promise<SearchPlaceItem[]> {
+  const hasUserLocation = isValidCoordinate(
+    options?.userLocation?.latitude,
+    options?.userLocation?.longitude,
+    true,
+  );
+  const userLatitude = hasUserLocation
+    ? options!.userLocation!.latitude
+    : 0;
+  const userLongitude = hasUserLocation
+    ? options!.userLocation!.longitude
+    : 0;
+  const pois = await offlineDatabaseService.searchPOIs(
+    query,
+    userLatitude,
+    userLongitude,
+    options?.limit ?? 15,
+  );
+
+  return pois.map(poi => {
+    const distanceMeters = hasUserLocation
+      ? Math.round(
+          getHaversineDistance(
+            userLatitude,
+            userLongitude,
+            poi.latitude,
+            poi.longitude,
+          ),
+        )
+      : undefined;
+    const category = detectCategory(`${poi.name} ${poi.category}`);
+    return {
+      id: poi.id,
+      title: poi.name,
+      subtitle: poi.address,
+      latitude: poi.latitude,
+      longitude: poi.longitude,
+      displayName: `${poi.name}, ${poi.address}`,
+      distanceMeters,
+      formattedDistance:
+        typeof distanceMeters === 'number'
+          ? formatDistance(distanceMeters)
+          : undefined,
+      categoryIcon: category.icon,
+      categoryName: poi.category,
+    };
+  });
+}
+
+async function getStoredOfflineLocationDetails(
+  latitude: number,
+  longitude: number,
+): Promise<ReverseGeocodeDetails> {
+  const offlinePois = await offlineDatabaseService.getPOIsByCategory(
+    'all',
+    latitude,
+    longitude,
+    10,
+  );
+  if (offlinePois.length > 0) {
+    const nearest = offlinePois[0];
+    return {
+      displayName: `${nearest.name}, ${nearest.address}`,
+      detectedArea: nearest.name,
+    };
+  }
+  return {
+    displayName: `Offline Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`,
+    detectedArea: 'Offline Region',
+  };
+}
+
 export class NominatimSearchRepository implements ISearchRepository {
   private cache: Map<string, CacheEntry<SearchPlaceItem[]>> = new Map();
   private pendingRequests: Map<string, Promise<SearchPlaceItem[]>> = new Map();
@@ -240,7 +320,8 @@ export class NominatimSearchRepository implements ISearchRepository {
     const latGrid = options?.userLocation?.latitude.toFixed(3) || 'none';
     const lonGrid = options?.userLocation?.longitude.toFixed(3) || 'none';
     const country = options?.countryCode || 'all';
-    return `${qNorm}_${latGrid}_${lonGrid}_${country}_${options?.limit || 15}`;
+    const radius = options?.radiusMeters || 'default';
+    return `${qNorm}_${latGrid}_${lonGrid}_${country}_${radius}_${options?.limit || 15}`;
   }
 
   public async searchPlaces(
@@ -250,6 +331,9 @@ export class NominatimSearchRepository implements ISearchRepository {
     const trimmedQuery = query.trim();
     if (trimmedQuery.length < 2) {
       return [];
+    }
+    if (!connectivityService.isOnlineMode()) {
+      return searchStoredOfflinePOIs(trimmedQuery, options);
     }
 
     const cacheKey = this.getCacheKey(trimmedQuery, options);
@@ -789,6 +873,10 @@ export class PhotonSearchRepository implements ISearchRepository {
     if (trimmedQuery.length < 2) {
       return [];
     }
+    if (!connectivityService.isOnlineMode()) {
+      logger.info(TAG, 'Offline mode: searching downloaded place data.');
+      return searchStoredOfflinePOIs(trimmedQuery, options);
+    }
 
     const cacheKey = this.getCacheKey(trimmedQuery, options);
 
@@ -824,6 +912,33 @@ export class PhotonSearchRepository implements ISearchRepository {
         const locationBias = userLoc
           ? `&lat=${userLoc.latitude}&lon=${userLoc.longitude}`
           : '';
+        const localRadiusMeters = Math.max(
+          1000,
+          Math.min(
+            DEFAULT_LOCAL_AUTOCOMPLETE_RADIUS_METERS,
+            options?.radiusMeters ?? DEFAULT_LOCAL_AUTOCOMPLETE_RADIUS_METERS,
+          ),
+        );
+        const localBoundingBox = userLoc
+          ? (() => {
+              const radiusKm = localRadiusMeters / 1000;
+              const latitudeDelta = radiusKm / 111.32;
+              const longitudeDelta =
+                radiusKm /
+                (111.32 *
+                  Math.max(
+                    0.1,
+                    Math.cos((userLoc.latitude * Math.PI) / 180),
+                  ));
+              return `&bbox=${(
+                userLoc.longitude - longitudeDelta
+              ).toFixed(5)},${(userLoc.latitude - latitudeDelta).toFixed(
+                5,
+              )},${(userLoc.longitude + longitudeDelta).toFixed(5)},${(
+                userLoc.latitude + latitudeDelta
+              ).toFixed(5)}`;
+            })()
+          : '';
         const countryBoundingBox =
           requestedCountryCode === 'PK'
             ? '&bbox=60.87,23.63,77.84,37.10'
@@ -836,7 +951,9 @@ export class PhotonSearchRepository implements ISearchRepository {
         // map's fallback camera center must not masquerade as user location.
         const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(
           trimmedQuery,
-        )}&lang=en&limit=${limit * 2}${locationBias}${countryBoundingBox}${countryCodeParam}`;
+        )}&lang=en&limit=${limit * 3}${locationBias}${
+          localBoundingBox || countryBoundingBox
+        }${countryCodeParam}`;
 
         let data: unknown = null;
         let lastPhotonError: Error | null = null;
@@ -957,6 +1074,16 @@ export class PhotonSearchRepository implements ISearchRepository {
           const category = detectCategory(
             `${name} ${String(props.osm_key || '')} ${String(props.osm_value || '')}`,
           );
+          const searchMetadata = `${String(props.osm_key || '')} ${String(
+            props.osm_value || '',
+          )}`;
+          const textMatchScore = calculateTextMatchScore(
+            name,
+            subtitle,
+            trimmedQuery,
+            searchMetadata,
+          );
+          if (textMatchScore <= 0) continue;
 
           const distanceMeters = userLoc
             ? Math.round(
@@ -985,6 +1112,7 @@ export class PhotonSearchRepository implements ISearchRepository {
               suburb: district,
             },
             query: trimmedQuery,
+            searchMetadata,
           });
 
           results.push({
@@ -1014,10 +1142,21 @@ export class PhotonSearchRepository implements ISearchRepository {
           }
         }
 
-        // Sort by composite ranking score (Hyderabad proximity + key areas + text match)
-        uniqueResults.sort((a, b) => b.rankingScore - a.rankingScore);
+        // When the provider returns at least one result in the current city /
+        // nearby region, do not contaminate autocomplete with far-away places.
+        const localResults = userLoc
+          ? uniqueResults.filter(
+              result =>
+                typeof result.distanceMeters === 'number' &&
+                result.distanceMeters <= localRadiusMeters,
+            )
+          : [];
+        const rankedResults =
+          userLoc && localResults.length > 0 ? localResults : uniqueResults;
 
-        const cleanResults: SearchPlaceItem[] = uniqueResults
+        rankedResults.sort((a, b) => b.rankingScore - a.rankingScore);
+
+        const cleanResults: SearchPlaceItem[] = rankedResults
           .slice(0, limit)
           .map(result => {
             const item: SearchPlaceItem & { rankingScore?: number } = {
@@ -1046,6 +1185,14 @@ export class PhotonSearchRepository implements ISearchRepository {
           data: cleanResults,
         });
         return cleanResults;
+      } catch (error) {
+        if (isCallerAbort(error, options?.signal)) throw error;
+        const offlineResults = await searchStoredOfflinePOIs(
+          trimmedQuery,
+          options,
+        );
+        if (offlineResults.length > 0) return offlineResults;
+        throw error;
       } finally {
         this.pendingRequests.delete(cacheKey);
         logger.performance(TAG, 'photon.search', startedAt, {
@@ -1079,6 +1226,9 @@ export class PhotonSearchRepository implements ISearchRepository {
         displayName: 'Address unavailable',
         detectedArea: 'Current Location',
       };
+    }
+    if (!connectivityService.isOnlineMode()) {
+      return getStoredOfflineLocationDetails(latitude, longitude);
     }
 
     const cacheKey = `${latitude.toFixed(4)}_${longitude.toFixed(4)}`;
@@ -1173,10 +1323,7 @@ export class PhotonSearchRepository implements ISearchRepository {
         throw error;
       }
       logger.warn(TAG, 'Photon reverse geocoding unavailable.', error);
-      return {
-        displayName: 'Address unavailable',
-        detectedArea: 'Current Location',
-      };
+      return getStoredOfflineLocationDetails(latitude, longitude);
     }
   }
 

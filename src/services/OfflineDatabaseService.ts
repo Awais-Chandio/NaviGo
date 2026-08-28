@@ -8,7 +8,8 @@ const DB_VERSION_KEY = '@navigo_offline_db_version';
 const POIS_KEY_PREFIX = '@navigo_offline_pois_';
 const ROUTING_NODES_PREFIX = '@navigo_offline_rnodes_';
 const ROUTING_EDGES_PREFIX = '@navigo_offline_redges_';
-const CURRENT_DB_VERSION = 3;
+const CURRENT_DB_VERSION = 4;
+const REAL_OSM_ROUTING_GRAPH_DB_VERSION = 4;
 
 export interface OfflinePOI {
   id: string;
@@ -79,6 +80,9 @@ export class OfflineDatabaseService {
             TAG,
             `Upgrading database schema v${storedVersion} -> v${CURRENT_DB_VERSION}.`,
           );
+          if (storedVersion < REAL_OSM_ROUTING_GRAPH_DB_VERSION) {
+            await this.removeLegacySyntheticRoutingGraphs();
+          }
           await AsyncStorage.setItem(
             DB_VERSION_KEY,
             CURRENT_DB_VERSION.toString(),
@@ -96,6 +100,27 @@ export class OfflineDatabaseService {
     } finally {
       this.isInitialized = true;
     }
+  }
+
+  private async removeLegacySyntheticRoutingGraphs(): Promise<void> {
+    const keys = await AsyncStorage.getAllKeys();
+    const legacyRoutingKeys = keys.filter(
+      key =>
+        key.startsWith(ROUTING_NODES_PREFIX) ||
+        key.startsWith(ROUTING_EDGES_PREFIX),
+    );
+    if (legacyRoutingKeys.length > 0) {
+      await Promise.all(
+        legacyRoutingKeys.map(key => AsyncStorage.removeItem(key)),
+      );
+    }
+    this.routingNodesMap.clear();
+    this.routingEdgesMap.clear();
+    this.regionGraphMap.clear();
+    logger.info(
+      TAG,
+      'Removed legacy synthetic routing graphs; downloaded maps and POIs were preserved.',
+    );
   }
 
   private async loadAllPOIsFromStorage(): Promise<void> {
@@ -136,11 +161,15 @@ export class OfflineDatabaseService {
       for (const key of nodeKeys) {
         const value = await AsyncStorage.getItem(key);
         if (!value) continue;
+        const regionId = key.replace(ROUTING_NODES_PREFIX, '');
         const nodes: OfflineRoutingNode[] = JSON.parse(value);
         if (Array.isArray(nodes)) {
+          const regionNodeIds = new Set<string>();
           for (const node of nodes) {
             this.routingNodesMap.set(node.id, node);
+            regionNodeIds.add(node.id);
           }
+          this.regionGraphMap.set(regionId, regionNodeIds);
         }
       }
 
@@ -166,24 +195,22 @@ export class OfflineDatabaseService {
     pois: OfflinePOI[],
   ): Promise<void> {
     await this.initializeDatabase();
-    const existingSet = this.regionPOIsMap.get(regionId) || new Set<string>();
-    const updatedPOIsList: OfflinePOI[] = [];
+    const existingSet = this.regionPOIsMap.get(regionId);
+    if (existingSet) {
+      existingSet.forEach(poiId => this.poisMap.delete(poiId));
+    }
+    const updatedSet = new Set<string>();
 
     for (const poi of pois) {
       this.poisMap.set(poi.id, poi);
-      existingSet.add(poi.id);
+      updatedSet.add(poi.id);
     }
-    this.regionPOIsMap.set(regionId, existingSet);
-
-    for (const poiId of existingSet) {
-      const p = this.poisMap.get(poiId);
-      if (p) updatedPOIsList.push(p);
-    }
+    this.regionPOIsMap.set(regionId, updatedSet);
 
     try {
       await AsyncStorage.setItem(
         `${POIS_KEY_PREFIX}${regionId}`,
-        JSON.stringify(updatedPOIsList),
+        JSON.stringify(pois),
       );
       logger.info(
         TAG,
@@ -308,9 +335,13 @@ export class OfflineDatabaseService {
     edges: OfflineRoutingEdge[],
   ): Promise<void> {
     await this.initializeDatabase();
+    this.removeRoutingGraphFromMemory(regionId);
+    const regionNodeIds = new Set<string>();
     for (const node of nodes) {
       this.routingNodesMap.set(node.id, node);
+      regionNodeIds.add(node.id);
     }
+    this.regionGraphMap.set(regionId, regionNodeIds);
 
     for (const edge of edges) {
       const list = this.routingEdgesMap.get(edge.startNodeId) || [];
@@ -344,15 +375,16 @@ export class OfflineDatabaseService {
     return Array.from(this.routingNodesMap.values());
   }
 
+  public getRoutingNode(nodeId: string): OfflineRoutingNode | null {
+    return this.routingNodesMap.get(nodeId) ?? null;
+  }
+
   public getRoutingEdgesForNode(nodeId: string): OfflineRoutingEdge[] {
     return this.routingEdgesMap.get(nodeId) || [];
   }
 
   public hasRoutingDataForRegion(regionId: string): boolean {
-    for (const node of this.routingNodesMap.values()) {
-      if (node.regionId === regionId) return true;
-    }
-    return false;
+    return (this.regionGraphMap.get(regionId)?.size ?? 0) > 0;
   }
 
   public hasRoutingDataForLocation(lat: number, lng: number): boolean {
@@ -367,17 +399,7 @@ export class OfflineDatabaseService {
 
   public async deleteRoutingGraphForRegion(regionId: string): Promise<void> {
     await this.initializeDatabase();
-    const nodeIdsToRemove = new Set<string>();
-    for (const [id, node] of this.routingNodesMap.entries()) {
-      if (node.regionId === regionId) {
-        nodeIdsToRemove.add(id);
-      }
-    }
-
-    for (const id of nodeIdsToRemove) {
-      this.routingNodesMap.delete(id);
-      this.routingEdgesMap.delete(id);
-    }
+    this.removeRoutingGraphFromMemory(regionId);
 
     try {
       await AsyncStorage.removeItem(`${ROUTING_NODES_PREFIX}${regionId}`);
@@ -398,6 +420,7 @@ export class OfflineDatabaseService {
     this.regionPOIsMap.clear();
     this.routingNodesMap.clear();
     this.routingEdgesMap.clear();
+    this.regionGraphMap.clear();
 
     try {
       const keys = await AsyncStorage.getAllKeys();
@@ -442,10 +465,27 @@ export class OfflineDatabaseService {
       poiCount: this.poisMap.size,
       routingNodeCount: this.routingNodesMap.size,
       routingEdgeCount: edgeCount,
-      regionCount: this.regionPOIsMap.size,
+      regionCount: new Set([
+        ...this.regionPOIsMap.keys(),
+        ...this.regionGraphMap.keys(),
+      ]).size,
     };
+  }
+
+  private removeRoutingGraphFromMemory(regionId: string): void {
+    const nodeIds =
+      this.regionGraphMap.get(regionId) ||
+      new Set(
+        Array.from(this.routingNodesMap.values())
+          .filter(node => node.regionId === regionId)
+          .map(node => node.id),
+      );
+    nodeIds.forEach(nodeId => {
+      this.routingNodesMap.delete(nodeId);
+      this.routingEdgesMap.delete(nodeId);
+    });
+    this.regionGraphMap.delete(regionId);
   }
 }
 
 export const offlineDatabaseService = new OfflineDatabaseService();
-

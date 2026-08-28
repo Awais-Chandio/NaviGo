@@ -438,6 +438,34 @@ export function getPointAtRouteDistance(
   };
 }
 
+export function getRemainingRouteCoordinates(
+  routeCoordinates: [number, number][],
+  progressPct: number,
+): [number, number][] {
+  if (!Array.isArray(routeCoordinates) || routeCoordinates.length < 2) {
+    return [];
+  }
+  const safeProgress = Number.isFinite(progressPct)
+    ? Math.max(0, Math.min(100, progressPct))
+    : 0;
+  if (safeProgress <= 0) return routeCoordinates.map(point => [...point]);
+  if (safeProgress >= 100) return [];
+
+  const metrics = buildRouteGeometryMetrics(routeCoordinates);
+  if (metrics.totalDistance <= 0) return [];
+  const point = getPointAtRouteDistance(
+    routeCoordinates,
+    metrics.totalDistance * (safeProgress / 100),
+    metrics,
+  );
+  return [
+    [point.longitude, point.latitude],
+    ...routeCoordinates
+      .slice(point.segmentIndex + 1)
+      .map(coordinate => [...coordinate] as [number, number]),
+  ];
+}
+
 export function calculateRouteProgress(
   userLat: number,
   userLng: number,

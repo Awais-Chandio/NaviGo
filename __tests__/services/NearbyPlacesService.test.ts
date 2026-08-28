@@ -1,11 +1,50 @@
 import {
   NearbyPlacesService,
   nearbyPlacesService,
+  recalculateNearbyDistances,
 } from '../../src/services/NearbyPlacesService';
 import type { INearbyPlacesRepository } from '../../src/repositories/NearbyPlacesRepository';
 import type { DrivingDistanceProvider } from '../../src/services/RoadDistanceService';
 
 describe('NearbyPlacesService', () => {
+  it('recalculates current-GPS distances and switches units at one kilometre', () => {
+    const places = [
+      {
+        id: 'under-one-km',
+        name: 'Close Place',
+        latitude: 25.4005,
+        longitude: 68.3578,
+        address: 'Close Road',
+        category: 'food',
+        distance: 9999,
+        formattedDistance: '9999 m',
+      },
+      {
+        id: 'over-one-km',
+        name: 'Farther Place',
+        latitude: 25.4095,
+        longitude: 68.3578,
+        address: 'Far Road',
+        category: 'food',
+        distance: 1,
+        formattedDistance: '1 m',
+      },
+    ];
+
+    const results = recalculateNearbyDistances(
+      places,
+      25.396,
+      68.3578,
+    );
+
+    expect(results[0].id).toBe('under-one-km');
+    expect(results[0].distance).toBeGreaterThan(400);
+    expect(results[0].distance).toBeLessThan(600);
+    expect(results[0].formattedDistance).toMatch(/^\d+ m$/);
+    expect(results[1].distance).toBeGreaterThan(1000);
+    expect(results[1].formattedDistance).toMatch(/^\d+\.\d km$/);
+  });
+
   it('replaces direct distances with road distances and sorts by the road result', async () => {
     const repository: INearbyPlacesRepository = {
       searchNearby: jest.fn().mockResolvedValue([
