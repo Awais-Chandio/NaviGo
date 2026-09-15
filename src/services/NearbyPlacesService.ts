@@ -19,6 +19,11 @@ import { isCallerAbort } from '../utils/networkUtils';
 import { logger } from '../utils/logger';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { getPlaceCategory } from '../config/placeCategories';
+import {
+  areSamePlace,
+  type OsmObjectType,
+  type PlaceProvider,
+} from '../utils/placeIdentity';
 
 export { CATEGORY_MAP };
 
@@ -67,6 +72,9 @@ interface NearbyFallbackSearchProvider {
       longitude: number;
       categoryName?: string;
       raw?: unknown;
+      source?: PlaceProvider;
+      objectType?: OsmObjectType;
+      objectId?: string | number;
     }>
   >;
 }
@@ -233,28 +241,9 @@ export class NearbyPlacesService {
         ),
       );
       if (directDistance > nearbyRadiusMeters(params.radius)) continue;
-      const normalizedName = place.name
-        .normalize('NFKC')
-        .toLocaleLowerCase()
-        .replace(/[^\p{L}\p{N}]+/gu, ' ')
-        .trim();
-      const duplicate = uniquePlaces.some(existing => {
-        if (existing.id === place.id) return true;
-        const existingName = existing.name
-          .normalize('NFKC')
-          .toLocaleLowerCase()
-          .replace(/[^\p{L}\p{N}]+/gu, ' ')
-          .trim();
-        return (
-          existingName === normalizedName &&
-          getHaversineDistance(
-            existing.latitude,
-            existing.longitude,
-            place.latitude,
-            place.longitude,
-          ) < 100
-        );
-      });
+      const duplicate = uniquePlaces.some(existing =>
+        areSamePlace(existing, place),
+      );
       if (!duplicate) {
         uniquePlaces.push({
           ...place,
@@ -335,7 +324,7 @@ export class NearbyPlacesService {
         );
         if (directDistance > radiusMeters) return places;
         places.push({
-          id: `search_${String(result.id)}`,
+          id: String(result.id),
           name: result.title,
           latitude: result.latitude,
           longitude: result.longitude,
@@ -343,6 +332,9 @@ export class NearbyPlacesService {
           category: categoryKey,
           distance: directDistance,
           formattedDistance: formatDistance(directDistance),
+          source: result.source || 'photon',
+          objectType: result.objectType,
+          objectId: result.objectId,
         });
         return places;
       }, [])

@@ -31,6 +31,12 @@ describe('OverpassNearbyPlacesRepository', () => {
       // must never invent a specific business name that OSM never provided.
       expect(results).toHaveLength(1);
       expect(results[0].name).toBe('Unnamed ATM');
+      expect(results[0]).toMatchObject({
+        id: 'overpass:node:55',
+        source: 'overpass',
+        objectType: 'node',
+        objectId: 55,
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }

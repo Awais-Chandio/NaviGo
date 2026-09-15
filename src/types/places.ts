@@ -1,3 +1,8 @@
+import type {
+  OsmObjectType,
+  PlaceProvider,
+} from '../utils/placeIdentity';
+
 export interface NearbySearchParams {
   latitude: number;
   longitude: number;
@@ -17,6 +22,9 @@ export interface NearbyPlace {
   category: string;
   distance: number;
   formattedDistance?: string;
+  source?: PlaceProvider;
+  objectType?: OsmObjectType;
+  objectId?: string | number;
 }
 
 export interface SavedPlace {

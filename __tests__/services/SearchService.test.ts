@@ -342,7 +342,7 @@ describe('SearchService', () => {
     }
   });
 
-  it('removes normalized duplicate provider features at the same place', async () => {
+  it('removes repeated Photon features with the same OSM object identity', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -354,6 +354,7 @@ describe('SearchService', () => {
               geometry: { coordinates: [68.3578, 25.396] },
               properties: {
                 osm_id: 9001,
+                osm_type: 'N',
                 name: 'City Cafe',
                 city: 'Hyderabad',
                 country: 'Pakistan',
@@ -363,7 +364,8 @@ describe('SearchService', () => {
             {
               geometry: { coordinates: [68.35781, 25.39601] },
               properties: {
-                osm_id: 9002,
+                osm_id: 9001,
+                osm_type: 'N',
                 name: 'City-Cafe',
                 city: 'Hyderabad',
                 country: 'Pakistan',

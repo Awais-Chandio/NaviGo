@@ -14,6 +14,11 @@ import {
   matchesPlaceCategory,
   PLACE_CATEGORIES,
 } from '../config/placeCategories';
+import {
+  areSamePlace,
+  buildPlaceId,
+  normalizeOsmObjectType,
+} from '../utils/placeIdentity';
 
 const TAG = 'NearbyPlacesService';
 const MAX_NEARBY_CACHE_ENTRIES = 50;
@@ -70,25 +75,7 @@ function removeProximityDuplicates(places: NearbyPlace[]): NearbyPlace[] {
   const unique: NearbyPlace[] = [];
 
   for (const place of places) {
-    const isDuplicate = unique.some(existing => {
-      if (existing.id === place.id) return true;
-
-      const dist = getHaversineDistance(
-        existing.latitude,
-        existing.longitude,
-        place.latitude,
-        place.longitude,
-      );
-
-      const normalizeName = (value: string) =>
-        value
-          .toLowerCase()
-          .replace(/[^\p{L}\p{N}]+/gu, ' ')
-          .trim();
-      const nameMatch =
-        normalizeName(existing.name) === normalizeName(place.name);
-      return nameMatch && dist < 100;
-    });
+    const isDuplicate = unique.some(existing => areSamePlace(existing, place));
 
     if (!isDuplicate) {
       unique.push(place);
@@ -339,8 +326,7 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
 
         const places: NearbyPlace[] = [];
 
-        for (let index = 0; index < elements.length; index++) {
-          const element = elements[index];
+        for (const element of elements) {
           const centerObj = element.center as
             | { lat?: number; lon?: number }
             | undefined;
@@ -397,10 +383,10 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
 
           const address = tags['addr:full'] || addressParts.join(', ');
 
+          const objectType = normalizeOsmObjectType(element.type);
+          const objectId = element.id as string | number | undefined;
           places.push({
-            id: `overpass_${String(element.type || 'element')}_${
-              element.id || index
-            }`,
+            id: buildPlaceId('overpass', objectType, objectId, lat, lon),
             name,
             latitude: lat,
             longitude: lon,
@@ -408,6 +394,9 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
             category,
             distance: distMeters,
             formattedDistance: formatDistance(distMeters),
+            source: 'overpass',
+            objectType,
+            objectId,
           });
         }
 

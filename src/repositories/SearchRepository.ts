@@ -31,6 +31,11 @@ import {
   classifyPlaceTags,
   PLACE_CATEGORIES,
 } from '../config/placeCategories';
+import {
+  areSamePlace,
+  buildPlaceId,
+  normalizeOsmObjectType,
+} from '../utils/placeIdentity';
 
 const TAG = 'SearchRepository';
 const MAX_SEARCH_CACHE_ENTRIES = 100;
@@ -68,28 +73,11 @@ function containsUrduScript(str: string): boolean {
   return /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
 }
 
-function normalizePlaceName(value: string): string {
-  return value
-    .normalize('NFKC')
-    .toLocaleLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim();
-}
-
 function isDuplicateSearchPlace(
-  existing: Pick<SearchPlaceItem, 'id' | 'title' | 'latitude' | 'longitude'>,
-  candidate: Pick<SearchPlaceItem, 'id' | 'title' | 'latitude' | 'longitude'>,
+  existing: SearchPlaceItem,
+  candidate: SearchPlaceItem,
 ): boolean {
-  if (String(existing.id) === String(candidate.id)) return true;
-  return (
-    normalizePlaceName(existing.title) === normalizePlaceName(candidate.title) &&
-    getHaversineDistance(
-      existing.latitude,
-      existing.longitude,
-      candidate.latitude,
-      candidate.longitude,
-    ) < 100
-  );
+  return areSamePlace(existing, candidate);
 }
 
 export function normalizeDetectedCity(city: string, county: string): string {
@@ -976,8 +964,7 @@ export class PhotonSearchRepository implements ISearchRepository {
 
         const results: (SearchPlaceItem & { rankingScore: number })[] = [];
 
-        for (let idx = 0; idx < features.length; idx++) {
-          const feat = features[idx];
+        for (const feat of features) {
           const geometry = feat.geometry as { coordinates?: [number, number] } | undefined;
           const props = (feat.properties as Record<string, unknown>) || {};
 
@@ -1075,8 +1062,10 @@ export class PhotonSearchRepository implements ISearchRepository {
             searchMetadata,
           });
 
+          const objectType = normalizeOsmObjectType(props.osm_type);
+          const objectId = props.osm_id as string | number | undefined;
           results.push({
-            id: (props.osm_id as string | number) || `photon_${lat}_${lon}_${idx}`,
+            id: buildPlaceId('photon', objectType, objectId, lat, lon),
             title: name,
             subtitle,
             latitude: lat,
@@ -1087,6 +1076,9 @@ export class PhotonSearchRepository implements ISearchRepository {
             categoryIcon: category.icon,
             categoryName: category.name,
             raw: props,
+            source: 'photon',
+            objectType,
+            objectId,
             rankingScore,
           });
         }

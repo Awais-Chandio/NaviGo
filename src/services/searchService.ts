@@ -6,6 +6,10 @@ import {
   MIN_SEARCH_QUERY_LENGTH,
 } from '../repositories/SearchRepository';
 import { logger } from '../utils/logger';
+import type {
+  OsmObjectType,
+  PlaceProvider,
+} from '../utils/placeIdentity';
 
 export interface SearchPlaceItem {
   id: string | number;
@@ -19,6 +23,9 @@ export interface SearchPlaceItem {
   categoryIcon?: string;
   categoryName?: string;
   raw?: unknown;
+  source?: PlaceProvider;
+  objectType?: OsmObjectType;
+  objectId?: string | number;
 }
 
 export interface SearchResult {
