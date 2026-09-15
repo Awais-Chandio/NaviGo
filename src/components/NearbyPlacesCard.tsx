@@ -145,7 +145,8 @@ const NearbyPlacesCardComponent: React.FC<NearbyPlacesCardProps> = ({
           <Text style={styles.emptyIcon}>📍</Text>
           <Text style={styles.emptyTitle}>No Places Found</Text>
           <Text style={styles.emptyText}>
-            No nearby {categoryTitle.toLowerCase()} found in the expanded area.
+            No nearby {categoryTitle.toLowerCase()} found around your current
+            location.
           </Text>
         </View>
       ) : (

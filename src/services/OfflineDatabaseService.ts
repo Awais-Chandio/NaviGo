@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { OfflineManager } from '@maplibre/maplibre-react-native';
 import { logger } from '../utils/logger';
 import { getHaversineDistance } from '../utils/locationUtils';
+import { getCategoryTagValues } from '../config/placeCategories';
 
 const TAG = 'OfflineDatabaseService';
 const DB_VERSION_KEY = '@navigo_offline_db_version';
@@ -15,6 +16,7 @@ export interface OfflinePOI {
   id: string;
   name: string;
   category: string;
+  categoryKey?: string;
   subCategory?: string;
   latitude: number;
   longitude: number;
@@ -229,17 +231,15 @@ export class OfflineDatabaseService {
   ): Promise<OfflinePOI[]> {
     await this.initializeDatabase();
     const normalizedCategory = category.toLowerCase().trim();
+    const acceptedProviderValues = getCategoryTagValues(normalizedCategory);
 
     const matches: OfflinePOI[] = [];
     for (const poi of this.poisMap.values()) {
       const poiCat = poi.category.toLowerCase();
       const poiSubCat = (poi.subCategory || '').toLowerCase();
-      const poiName = poi.name.toLowerCase();
-
       const categoryMatch =
-        poiCat.includes(normalizedCategory) ||
-        poiSubCat.includes(normalizedCategory) ||
-        poiName.includes(normalizedCategory) ||
+        acceptedProviderValues.includes(poiCat) ||
+        acceptedProviderValues.includes(poiSubCat) ||
         normalizedCategory === 'all';
 
       if (!categoryMatch) continue;

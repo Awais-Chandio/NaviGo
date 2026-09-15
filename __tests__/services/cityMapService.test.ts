@@ -1,4 +1,3 @@
-import { LOCATION_CONFIG } from '../../src/config/locationConfig';
 import { cityMapService } from '../../src/services/cityMapService';
 import { getHaversineDistance } from '../../src/utils/locationUtils';
 
@@ -47,7 +46,7 @@ describe('CityMapService', () => {
     expect(plan.radiusKm).toBeGreaterThan(cornerDistanceKm);
   });
 
-  it('uses the safe Hyderabad fallback when boundary lookup is unavailable', async () => {
+  it('uses the live location for fallback when boundary lookup is unavailable', async () => {
     jest
       .spyOn(globalThis, 'fetch')
       .mockRejectedValue(new Error('network down'));
@@ -55,15 +54,12 @@ describe('CityMapService', () => {
     const plan = await cityMapService.resolveDownloadPlan({
       cityName: 'Hyderabad',
       countryCode: 'PK',
-      userLocation: {
-        latitude: LOCATION_CONFIG.DEFAULT_REGION.latitude,
-        longitude: LOCATION_CONFIG.DEFAULT_REGION.longitude,
-      },
+      userLocation: { latitude: 25.38, longitude: 68.34 },
     });
 
     expect(plan.usedFallback).toBe(true);
-    expect(plan.name).toBe('Hyderabad City');
-    expect(plan.radiusKm).toBe(LOCATION_CONFIG.DEFAULT_CITY_OFFLINE_RADIUS_KM);
+    expect(plan.name).toBe('Hyderabad Area');
+    expect(plan.center).toEqual({ latitude: 25.38, longitude: 68.34 });
   });
 
   it('does not silently download the default city for a distant unknown city', async () => {

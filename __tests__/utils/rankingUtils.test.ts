@@ -12,10 +12,14 @@ describe('rankingUtils', () => {
     expect(calculateTextMatchScore('Grill Town', 'Hyderabad', 'gri to')).toBeGreaterThan(0);
   });
 
+  it('rejects a result when a typed word does not match', () => {
+    expect(calculateTextMatchScore('Grill Town', 'Hyderabad', 'grill pizza')).toBe(0);
+  });
+
   it('identifies branded places accurately', () => {
-    expect(isBrandedPlace('Shell Petrol Pump')).toBe(true);
-    expect(isBrandedPlace('McDonalds Fast Food')).toBe(true);
-    expect(isBrandedPlace('HBL ATM')).toBe(true);
+    expect(isBrandedPlace('Shell Petrol Pump')).toBe(false);
+    expect(isBrandedPlace('McDonalds Fast Food')).toBe(false);
+    expect(isBrandedPlace('HBL ATM')).toBe(false);
     expect(isBrandedPlace('Local Corner Shop')).toBe(false);
     expect(isBrandedPlace('Random Spot', undefined, { brand: 'PSO' })).toBe(true);
   });

@@ -13,8 +13,10 @@ import { logger } from '../utils/logger';
 
 export function useLocation(isNavigating = false) {
   const [location, setLocation] = useState<LocationData>({
-    latitude: LOCATION_CONFIG.DEFAULT_REGION.latitude,
-    longitude: LOCATION_CONFIG.DEFAULT_REGION.longitude,
+    // Zero is an explicit "no fix yet" sentinel and is rejected by every
+    // place/search/navigation boundary until native GPS supplies real data.
+    latitude: 0,
+    longitude: 0,
     accuracy: 0,
     heading: 0,
   });

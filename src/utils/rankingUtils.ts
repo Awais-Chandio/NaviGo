@@ -60,17 +60,11 @@ export function calculateTextMatchScore(
     candidateTokens: string[],
   ): boolean =>
     matchingTokenCount(candidateTokens) === queryTokens.length;
-  const nearlyAllQueryTokensMatch = (
-    candidateTokens: string[],
-  ): boolean =>
-    queryTokens.length > 1 &&
-    matchingTokenCount(candidateTokens) >= queryTokens.length - 1;
 
   if (normalizedTitle === normalizedQuery) return 500;
   if (normalizedTitle.startsWith(normalizedQuery)) return 450;
   if (allQueryTokensMatch(titleTokens)) return 400;
   if (normalizedTitle.includes(normalizedQuery)) return 350;
-  if (nearlyAllQueryTokensMatch(titleTokens)) return 300;
   if (normalizedSubtitle.startsWith(normalizedQuery)) return 220;
   if (allQueryTokensMatch(subtitleTokens)) return 180;
   if (normalizedSubtitle.includes(normalizedQuery)) return 140;
@@ -79,53 +73,19 @@ export function calculateTextMatchScore(
   return 0;
 }
 
-const BRAND_KEYWORDS = [
-  'shell',
-  'total',
-  'pso',
-  'caltex',
-  'attock',
-  'hascol',
-  'byco',
-  'mcdonald',
-  'kfc',
-  'subway',
-  'domino',
-  'pizza hut',
-  'starbucks',
-  'dunkin',
-  'hbl',
-  'ubl',
-  'mcb',
-  'allied bank',
-  'meezan',
-  'alfalah',
-  'marriott',
-  'serena',
-  'pearl continental',
-  'pc hotel',
-  'hyperstar',
-  'carrefour',
-  'metro',
-  'chaseup',
-  'imtiaz',
-  'nandos',
-  'hardees',
-];
-
 export function isBrandedPlace(
-  title: string,
+  _title: string,
   namedetails?: Record<string, string>,
   extratags?: Record<string, string>,
   tags?: Record<string, string>,
 ): boolean {
-  if (extratags?.brand || extratags?.operator || tags?.brand || tags?.operator || namedetails?.brand) {
-    return true;
-  }
-
-  const textLower = (title + ' ' + (namedetails?.name || '') + ' ' + (tags?.brand || '')).toLowerCase();
-
-  return BRAND_KEYWORDS.some(brand => textLower.includes(brand));
+  return Boolean(
+    extratags?.brand ||
+      extratags?.operator ||
+      tags?.brand ||
+      tags?.operator ||
+      namedetails?.brand,
+  );
 }
 
 export function hasCompleteMetadata(

@@ -3,6 +3,7 @@ import {
   INearbyPlacesRepository,
   OverpassNearbyPlacesRepository,
   CATEGORY_MAP,
+  matchesNearbyCategory,
 } from '../repositories/NearbyPlacesRepository';
 import {
   roadDistanceService,
@@ -17,6 +18,7 @@ import {
 import { isCallerAbort } from '../utils/networkUtils';
 import { logger } from '../utils/logger';
 import { LOCATION_CONFIG } from '../config/locationConfig';
+import { getPlaceCategory } from '../config/placeCategories';
 
 export { CATEGORY_MAP };
 
@@ -64,48 +66,23 @@ interface NearbyFallbackSearchProvider {
       latitude: number;
       longitude: number;
       categoryName?: string;
+      raw?: unknown;
     }>
   >;
 }
 
-const CATEGORY_FALLBACK_QUERIES: Record<string, string[]> = {
-  food: ['restaurant', 'fast food', 'cafe'],
-  restaurant: ['restaurant', 'fast food', 'cafe'],
-  cafe: ['cafe', 'coffee shop'],
-  atm: ['atm', 'bank'],
-  bank: ['bank', 'atm'],
-  fuel: ['fuel', 'petrol station', 'gas station'],
-  petrol: ['petrol station', 'fuel', 'gas station'],
-  hospital: ['hospital', 'clinic'],
-  pharmacy: ['pharmacy', 'chemist'],
-  hotel: ['hotel', 'guest house'],
-  parking: ['parking', 'car parking'],
-  shopping: ['shopping mall', 'supermarket', 'grocery store'],
-  grocery: ['grocery store', 'supermarket', 'market'],
-  supermarket: ['supermarket', 'shopping mall', 'grocery store'],
-  school: ['school', 'academy'],
-  university: ['university', 'college'],
-};
+// Overpass is the more complete category source but is usually slower than
+// Photon. Keep the fast partial list visible while allowing the full tagged
+// result set enough time to arrive.
+const PROVIDER_MERGE_GRACE_MS = 6500;
 
-const CATEGORY_MATCH_TERMS: Record<string, string[]> = {
-  food: ['restaurant', 'food', 'cafe', 'bakery'],
-  restaurant: ['restaurant', 'food', 'cafe', 'bakery'],
-  cafe: ['cafe', 'coffee', 'restaurant'],
-  atm: ['atm', 'bank'],
-  bank: ['bank', 'atm'],
-  fuel: ['fuel', 'gas station', 'petrol', 'cng'],
-  petrol: ['fuel', 'gas station', 'petrol', 'cng'],
-  hospital: ['hospital', 'clinic', 'medical'],
-  pharmacy: ['pharmacy', 'chemist', 'drugstore'],
-  hotel: ['hotel', 'hostel', 'lodging', 'guest house'],
-  parking: ['parking'],
-  shopping: ['shopping', 'supermarket', 'mall', 'market', 'grocery', 'store'],
-  grocery: ['shopping', 'supermarket', 'market', 'grocery', 'store'],
-  supermarket: ['shopping', 'supermarket', 'mall', 'market', 'grocery', 'store'],
-  school: ['school', 'academy', 'education'],
-  university: ['university', 'college', 'campus'],
-};
-const PROVIDER_MERGE_GRACE_MS = 1500;
+function nearbyRadiusMeters(radius?: number): number {
+  return typeof radius === 'number' && Number.isFinite(radius) && radius > 0
+    ? Math.min(10000, Math.max(100, Math.round(radius * 1000)))
+    : LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS[
+        LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS.length - 1
+      ];
+}
 
 export class NearbyPlacesService {
   private repository: INearbyPlacesRepository;
@@ -141,7 +118,10 @@ export class NearbyPlacesService {
     }
     let places: NearbyPlace[];
     let usedSearchFallback = false;
-    if (this.fallbackSearchProvider && connectivityService.isOnlineMode()) {
+    if (
+      this.fallbackSearchProvider &&
+      connectivityService.getMode() !== 'offline'
+    ) {
       const fastest = await this.searchFromFastestProvider(
         params,
         signal,
@@ -165,7 +145,7 @@ export class NearbyPlacesService {
     }
     if (
       params.includeRoadDistance === false ||
-      !connectivityService.isOnlineMode()
+      connectivityService.getMode() === 'offline'
     ) {
       return places;
     }
@@ -229,6 +209,7 @@ export class NearbyPlacesService {
           place.longitude,
         ),
       );
+      if (directDistance > nearbyRadiusMeters(params.radius)) continue;
       const normalizedName = place.name
         .normalize('NFKC')
         .toLocaleLowerCase()
@@ -377,16 +358,10 @@ export class NearbyPlacesService {
     signal?: AbortSignal,
   ): Promise<NearbyPlace[]> {
     const categoryKey = params.category.trim().toLowerCase();
-    const searchQuery = CATEGORY_MAP[categoryKey]?.osmQuery || categoryKey;
-    const searchQueries = CATEGORY_FALLBACK_QUERIES[categoryKey] || [searchQuery];
-    const maxDynamicRadiusMeters =
-      LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS[
-        LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS.length - 1
-      ];
-    const radiusMeters = Math.max(
-      maxDynamicRadiusMeters,
-      Math.round((params.radius ?? 10) * 1000),
-    );
+    const categoryDefinition = getPlaceCategory(categoryKey);
+    if (!categoryDefinition) return [];
+    const searchQueries = categoryDefinition.searchQueries;
+    const radiusMeters = nearbyRadiusMeters(params.radius);
     const resultGroups = await Promise.all(
       searchQueries.map(async query => {
         try {
@@ -417,12 +392,12 @@ export class NearbyPlacesService {
 
     return results
       .reduce<NearbyPlace[]>((places, result) => {
-        const resultText = `${result.title} ${result.categoryName || ''}`.toLocaleLowerCase();
-        if (
-          !(CATEGORY_MATCH_TERMS[categoryKey] || [searchQuery]).some(term =>
-            resultText.includes(term),
-          )
-        ) {
+        const raw = result.raw && typeof result.raw === 'object'
+          ? result.raw as Record<string, unknown>
+          : {};
+        const key = String(raw.osm_key || raw.class || '');
+        const value = raw.osm_value || raw.type;
+        if (!matchesNearbyCategory(categoryKey, { [key]: value })) {
           return places;
         }
         const directDistance = Math.round(

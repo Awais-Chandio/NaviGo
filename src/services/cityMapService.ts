@@ -8,7 +8,6 @@ const CITY_BOUNDARY_TIMEOUT_MS = 12000;
 const CITY_COVERAGE_MARGIN_KM = 1;
 const MIN_CITY_RADIUS_KM = 5;
 const MAX_CITY_RADIUS_KM = 100;
-const DEFAULT_CITY_FALLBACK_DISTANCE_KM = 50;
 
 interface NominatimCityResult {
   osm_type?: string;
@@ -131,32 +130,16 @@ class CityMapService {
   private getFallbackPlan(
     cityName: string,
     userLocation: OfflineRegionCenter,
-  ): CityDownloadPlan | null {
-    const fallbackCenter = {
-      latitude: LOCATION_CONFIG.DEFAULT_REGION.latitude,
-      longitude: LOCATION_CONFIG.DEFAULT_REGION.longitude,
-    };
-    const isDefaultCity =
-      cityName.trim().toLowerCase() ===
-      LOCATION_CONFIG.DEFAULT_REGION.cityName.toLowerCase();
-    const isNearDefaultCity =
-      getHaversineDistance(
-        userLocation.latitude,
-        userLocation.longitude,
-        fallbackCenter.latitude,
-        fallbackCenter.longitude,
-      ) <=
-      DEFAULT_CITY_FALLBACK_DISTANCE_KM * 1000;
-    if (!isDefaultCity && !isNearDefaultCity) return null;
-
-    const radiusKm = LOCATION_CONFIG.DEFAULT_CITY_OFFLINE_RADIUS_KM;
+  ): CityDownloadPlan {
+    const fallbackCenter = { ...userLocation };
+    const radiusKm = LOCATION_CONFIG.DEFAULT_OFFLINE_REGION_RADIUS_KM;
     const latitudeDelta = radiusKm / 111.32;
     const longitudeDelta =
       radiusKm /
       (111.32 *
         Math.max(0.1, Math.cos((fallbackCenter.latitude * Math.PI) / 180)));
     return {
-      name: `${LOCATION_CONFIG.DEFAULT_REGION.cityName} City`,
+      name: `${cityName} Area`,
       center: fallbackCenter,
       radiusKm,
       cityBounds: {
@@ -175,17 +158,7 @@ class CityMapService {
     userLocation,
     signal,
   }: ResolveCityDownloadOptions): Promise<CityDownloadPlan> {
-    const requestedCity =
-      cityName?.trim() ||
-      (getHaversineDistance(
-        userLocation.latitude,
-        userLocation.longitude,
-        LOCATION_CONFIG.DEFAULT_REGION.latitude,
-        LOCATION_CONFIG.DEFAULT_REGION.longitude,
-      ) <=
-      DEFAULT_CITY_FALLBACK_DISTANCE_KM * 1000
-        ? LOCATION_CONFIG.DEFAULT_REGION.cityName
-        : '');
+    const requestedCity = cityName?.trim() || '';
     if (!requestedCity) {
       throw new Error(
         'City name is not available yet. Wait for address detection and try again.',
@@ -272,9 +245,14 @@ class CityMapService {
       };
     } catch (error) {
       if (signal?.aborted) throw error;
-      const fallback = this.getFallbackPlan(requestedCity, userLocation);
-      if (fallback) return fallback;
-      throw error;
+      if (
+        error instanceof Error &&
+        (error.message.startsWith('No downloadable boundary') ||
+          error.message.includes('too large'))
+      ) {
+        throw error;
+      }
+      return this.getFallbackPlan(requestedCity, userLocation);
     }
   }
 }

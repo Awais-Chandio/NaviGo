@@ -17,41 +17,14 @@ export const LOCATION_CONFIG = {
   /** Location watch fastest interval in ms */
   GPS_WATCH_FASTEST_INTERVAL_MS: 1500,
 
-  /** Default operating region: Hyderabad, Sindh, Pakistan */
-  DEFAULT_REGION: {
-    latitude: 25.396,
-    longitude: 68.3578,
-    cityName: 'Hyderabad',
-    stateName: 'Sindh',
-    countryName: 'Pakistan',
-    countryCode: 'PK',
-  },
-
-  /** Priority areas in Hyderabad to boost in ranking */
-  HYDERABAD_PRIORITY_AREAS: [
-    'qasimabad',
-    'latifabad',
-    'city',
-    'autobahn',
-    'hala naka',
-    'saddar',
-    'hirabad',
-  ],
-
-  /** Mandatory auto-expansion search radius steps for nearby places (meters) */
+  /** Nearby coverage options; category taps use the widest and sort nearest-first. */
   NEARBY_RADIUS_STEPS_METERS: [2000, 5000, 10000],
 
   /** Max high quality nearby results to return */
   MAX_NEARBY_RESULTS: 20,
 
-  /** Default search radius in km for nearby places */
-  DEFAULT_NEARBY_SEARCH_RADIUS_KM: 2,
-
   /** Guaranteed circular coverage radius for a current-area offline download */
   DEFAULT_OFFLINE_REGION_RADIUS_KM: 10,
-
-  /** Safe city-wide fallback coverage for Hyderabad when boundary lookup is unavailable */
-  DEFAULT_CITY_OFFLINE_RADIUS_KM: 25,
 
   /** Battery optimization - Location watch interval in normal mode (ms) */
   NORMAL_LOCATION_INTERVAL: 5000,

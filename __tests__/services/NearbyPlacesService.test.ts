@@ -120,6 +120,28 @@ describe('NearbyPlacesService', () => {
     expect(roadProvider.getDrivingDistances).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['hospital', 'Hospital Road', 'highway', 'residential', 'amenity', 'hospital'],
+    ['hotel', 'Hotel Restaurant', 'amenity', 'restaurant', 'tourism', 'hotel'],
+    ['restaurant', 'Restaurant Supplies', 'shop', 'houseware', 'amenity', 'restaurant'],
+    ['atm', 'Bank Office', 'amenity', 'bank', 'amenity', 'atm'],
+  ])('validates actual provider types for %s instead of names', async (
+    category, misleadingTitle, wrongKey, wrongValue, validKey, validValue,
+  ) => {
+    const place = { latitude: 25.397, longitude: 68.358, subtitle: 'Nearby Road' };
+    const service = new NearbyPlacesService(
+      { searchNearby: jest.fn().mockResolvedValue([]) },
+      { getDrivingDistances: jest.fn() },
+      { searchPlaces: jest.fn().mockResolvedValue([
+        { ...place, id: 'wrong', title: misleadingTitle, raw: { osm_key: wrongKey, osm_value: wrongValue } },
+        { ...place, id: 'unverified', title: category },
+        { ...place, id: 'valid', title: 'Actual Business', raw: { osm_key: validKey, osm_value: validValue } },
+      ]) },
+    );
+    const result = await service.searchNearby({ latitude: 25.396, longitude: 68.3578, category, radius: 2, includeRoadDistance: false });
+    expect(result.map(item => item.name)).toEqual(['Actual Business']);
+  });
+
   it('shows a fast partial result and then merges the slower provider', async () => {
     const repository: INearbyPlacesRepository = {
       searchNearby: jest.fn(() =>
@@ -147,6 +169,7 @@ describe('NearbyPlacesService', () => {
         {
           id: 'fast-photon-result',
           title: 'Fast Restaurant',
+          raw: { osm_key: 'amenity', osm_value: 'restaurant' },
           subtitle: 'Saddar',
           latitude: 25.397,
           longitude: 68.358,
@@ -191,7 +214,7 @@ describe('NearbyPlacesService', () => {
     ['school', 'City Public School', 'School'],
     ['university', 'City University', 'University'],
   ])(
-    'expands sparse %s results dynamically and keeps the detected country',
+    'rejects distant %s fallback results and keeps the detected country',
     async (category, title, categoryName) => {
       const repository: INearbyPlacesRepository = {
         searchNearby: jest.fn().mockResolvedValue([]),
@@ -205,6 +228,7 @@ describe('NearbyPlacesService', () => {
             latitude: 25.44,
             longitude: 68.3578,
             categoryName,
+            raw: { osm_key: category === 'supermarket' ? 'shop' : 'amenity', osm_value: category },
           },
         ]),
       };
@@ -223,13 +247,12 @@ describe('NearbyPlacesService', () => {
         includeRoadDistance: false,
       });
 
-      expect(results.map(place => place.name)).toEqual([title]);
-      expect(results[0].distance).toBeGreaterThan(2000);
+      expect(results).toEqual([]);
       expect(fallbackProvider.searchPlaces).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
           countryCode: 'AE',
-          radiusMeters: 10000,
+          radiusMeters: 2000,
         }),
       );
     },
@@ -247,6 +270,7 @@ describe('NearbyPlacesService', () => {
         {
           id: 'fallback-restaurant',
           title: 'Fallback Restaurant',
+          raw: { osm_key: 'amenity', osm_value: 'restaurant' },
           subtitle: 'Nearby Road',
           latitude: 25.397,
           longitude: 68.358,
