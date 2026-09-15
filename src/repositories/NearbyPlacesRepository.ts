@@ -143,7 +143,11 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
       LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS[
         LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS.length - 1
       ];
-    const radiusStepsMeters = [requestedRadiusMeters || widestNearbyRadius];
+    const radiusStepsMeters = requestedRadiusMeters
+      ? [requestedRadiusMeters]
+      : LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS.filter(
+          radius => radius <= widestNearbyRadius,
+        );
     const cacheKey = this.getCacheKey(
       category,
       latitude,
@@ -420,52 +424,21 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
       }
     };
 
-    return new Promise<NearbyPlace[]>((resolve, reject) => {
-      let remaining = OVERPASS_ENDPOINTS.length;
-      let lastError: Error | null = null;
-      let receivedEmptyResponse = false;
-      let settled = false;
-
-      const finishEmptyOrError = () => {
-        if (settled || remaining > 0) return;
-        settled = true;
-        if (receivedEmptyResponse) {
-          resolve([]);
-        } else {
-          reject(
-            lastError || new Error('All Overpass endpoints are unavailable.'),
-          );
-        }
-      };
-
-      OVERPASS_ENDPOINTS.forEach(baseUrl => {
-        requestEndpoint(baseUrl)
-          .then(results => {
-            if (settled) return;
-            remaining -= 1;
-            if (results.length > 0) {
-              settled = true;
-              resolve(results);
-              return;
-            }
-            receivedEmptyResponse = true;
-            finishEmptyOrError();
-          })
-          .catch(error => {
-            if (settled) return;
-            if (isCallerAbort(error, signal)) {
-              settled = true;
-              reject(error);
-              return;
-            }
-            remaining -= 1;
-            lastError =
-              error instanceof Error
-                ? error
-                : new Error('Overpass request failed.');
-            finishEmptyOrError();
-          });
-      });
-    });
+    let lastError: Error | null = null;
+    for (const baseUrl of OVERPASS_ENDPOINTS) {
+      try {
+        // A successful empty response is authoritative for this radius. The
+        // repository may expand to its next radius, but it must not duplicate
+        // the same public query across every mirror.
+        return await requestEndpoint(baseUrl);
+      } catch (error) {
+        if (isCallerAbort(error, signal)) throw error;
+        lastError =
+          error instanceof Error
+            ? error
+            : new Error('Overpass request failed.');
+      }
+    }
+    throw lastError || new Error('All Overpass endpoints are unavailable.');
   }
 }

@@ -71,11 +71,6 @@ interface NearbyFallbackSearchProvider {
   >;
 }
 
-// Overpass is the more complete category source but is usually slower than
-// Photon. Keep the fast partial list visible while allowing the full tagged
-// result set enough time to arrive.
-const PROVIDER_MERGE_GRACE_MS = 6500;
-
 function nearbyRadiusMeters(radius?: number): number {
   return typeof radius === 'number' && Number.isFinite(radius) && radius > 0
     ? Math.min(10000, Math.max(100, Math.round(radius * 1000)))
@@ -116,23 +111,51 @@ export class NearbyPlacesService {
     if (!isValidCoordinate(params.latitude, params.longitude, true)) {
       return [];
     }
-    let places: NearbyPlace[];
+    let places: NearbyPlace[] = [];
     let usedSearchFallback = false;
+    let primarySucceeded = false;
+    let primaryError: unknown;
+    try {
+      places = await this.repository.searchNearby(params, signal);
+      primarySucceeded = true;
+      if (places.length > 0) {
+        onPartialResults?.(this.normalizePlaces(places, params));
+      }
+    } catch (error) {
+      if (isCallerAbort(error, signal)) throw error;
+      primaryError = error;
+      logger.info(
+        'NearbyPlacesService',
+        'Primary nearby provider unavailable; trying the search fallback.',
+        error,
+      );
+    }
+
     if (
+      places.length === 0 &&
       this.fallbackSearchProvider &&
       connectivityService.getMode() !== 'offline'
     ) {
-      const fastest = await this.searchFromFastestProvider(
-        params,
-        signal,
-        partialPlaces => {
-          onPartialResults?.(this.normalizePlaces(partialPlaces, params));
-        },
-      );
-      places = fastest.places;
-      usedSearchFallback = fastest.usedSearchFallback;
-    } else {
-      places = await this.repository.searchNearby(params, signal);
+      try {
+        const fallbackPlaces = await this.searchWithFallback(params, signal);
+        if (fallbackPlaces.length > 0) {
+          places = fallbackPlaces;
+          usedSearchFallback = true;
+          onPartialResults?.(this.normalizePlaces(places, params));
+        }
+      } catch (fallbackError) {
+        if (isCallerAbort(fallbackError, signal)) throw fallbackError;
+        if (!primarySucceeded) {
+          throw fallbackError || primaryError;
+        }
+        logger.debug(
+          'NearbyPlacesService',
+          'Fallback provider unavailable after an authoritative empty result.',
+          fallbackError,
+        );
+      }
+    } else if (!primarySucceeded && primaryError) {
+      throw primaryError;
     }
 
     places = this.normalizePlaces(places, params);
@@ -247,112 +270,6 @@ export class NearbyPlacesService {
       .slice(0, LOCATION_CONFIG.MAX_NEARBY_RESULTS);
   }
 
-  private async searchFromFastestProvider(
-    params: NearbySearchParams,
-    signal?: AbortSignal,
-    onPartialResults?: (places: NearbyPlace[]) => void,
-  ): Promise<{ places: NearbyPlace[]; usedSearchFallback: boolean }> {
-    type ProviderOutcome = {
-      places?: NearbyPlace[];
-      error?: unknown;
-      usedSearchFallback: boolean;
-    };
-
-    const overpassController = new AbortController();
-    const fallbackController = new AbortController();
-    const abortChildren = () => {
-      overpassController.abort();
-      fallbackController.abort();
-    };
-    if (signal?.aborted) {
-      abortChildren();
-    } else {
-      signal?.addEventListener('abort', abortChildren, { once: true });
-    }
-
-    const overpassTask: Promise<ProviderOutcome> = this.repository
-      .searchNearby(params, overpassController.signal)
-      .then(providerPlaces => ({
-        places: providerPlaces,
-        usedSearchFallback: false,
-      }))
-      .catch(error => ({ error, usedSearchFallback: false }));
-    const fallbackTask: Promise<ProviderOutcome> = this.searchWithFallback(
-      params,
-      fallbackController.signal,
-    )
-      .then(providerPlaces => ({
-        places: providerPlaces,
-        usedSearchFallback: true,
-      }))
-      .catch(error => ({ error, usedSearchFallback: true }));
-
-    try {
-      const first = await Promise.race([overpassTask, fallbackTask]);
-      if (signal?.aborted) {
-        throw first.error || new Error('Nearby search was cancelled.');
-      }
-      if (first.places && first.places.length > 0) {
-        onPartialResults?.(first.places);
-      }
-
-      const secondTask = first.usedSearchFallback
-        ? overpassTask
-        : fallbackTask;
-      let mergeTimeout: ReturnType<typeof setTimeout> | undefined;
-      const second = first.places?.length
-        ? await Promise.race([
-            secondTask,
-            new Promise<ProviderOutcome>(resolve => {
-              mergeTimeout = setTimeout(
-                () =>
-                  resolve({
-                    error: new Error('Provider merge grace period elapsed.'),
-                    usedSearchFallback: !first.usedSearchFallback,
-                  }),
-                PROVIDER_MERGE_GRACE_MS,
-              );
-            }),
-          ])
-        : await secondTask;
-      if (mergeTimeout) clearTimeout(mergeTimeout);
-      if (
-        second.error instanceof Error &&
-        second.error.message === 'Provider merge grace period elapsed.'
-      ) {
-        if (first.usedSearchFallback) {
-          overpassController.abort();
-        } else {
-          fallbackController.abort();
-        }
-      }
-      if (signal?.aborted) {
-        throw second.error || first.error || new Error('Nearby search was cancelled.');
-      }
-      const mergedPlaces = [
-        ...(first.places || []),
-        ...(second.places || []),
-      ];
-      if (mergedPlaces.length > 0) {
-        return {
-          places: mergedPlaces,
-          usedSearchFallback:
-            (first.usedSearchFallback && Boolean(first.places?.length)) ||
-            (second.usedSearchFallback && Boolean(second.places?.length)),
-        };
-      }
-      if (first.places || second.places) {
-        return {
-          places: [],
-          usedSearchFallback: second.usedSearchFallback,
-        };
-      }
-      throw second.error || first.error || new Error('Nearby providers unavailable.');
-    } finally {
-      signal?.removeEventListener('abort', abortChildren);
-    }
-  }
-
   private async searchWithFallback(
     params: NearbySearchParams,
     signal?: AbortSignal,
@@ -362,10 +279,15 @@ export class NearbyPlacesService {
     if (!categoryDefinition) return [];
     const searchQueries = categoryDefinition.searchQueries;
     const radiusMeters = nearbyRadiusMeters(params.radius);
-    const resultGroups = await Promise.all(
-      searchQueries.map(async query => {
-        try {
-          return await this.fallbackSearchProvider!.searchPlaces(query, {
+    const results: Awaited<
+      ReturnType<NearbyFallbackSearchProvider['searchPlaces']>
+    > = [];
+    let successfulRequestCount = 0;
+    let lastError: unknown;
+
+    for (const query of searchQueries) {
+      try {
+        const group = await this.fallbackSearchProvider!.searchPlaces(query, {
             userLocation: {
               latitude: params.latitude,
               longitude: params.longitude,
@@ -375,20 +297,23 @@ export class NearbyPlacesService {
             countryCode: params.countryCode,
             signal,
           });
-        } catch (error) {
-          if (isCallerAbort(error, signal)) throw error;
-          logger.debug(
-            'NearbyPlacesService',
-            `Category alias search failed for "${query}".`,
-            error,
-          );
-          return [];
-        }
-      }),
-    );
-    const results = resultGroups.reduce<
-      Awaited<ReturnType<NearbyFallbackSearchProvider['searchPlaces']>>
-    >((allResults, group) => allResults.concat(group), []);
+        successfulRequestCount += 1;
+        results.push(...group);
+      } catch (error) {
+        if (isCallerAbort(error, signal)) throw error;
+        lastError = error;
+        logger.debug(
+          'NearbyPlacesService',
+          `Category alias search failed for "${query}".`,
+          error,
+        );
+      }
+    }
+    if (successfulRequestCount === 0) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('Nearby fallback provider is unavailable.');
+    }
 
     return results
       .reduce<NearbyPlace[]>((places, result) => {

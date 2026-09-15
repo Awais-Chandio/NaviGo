@@ -142,7 +142,7 @@ describe('NearbyPlacesService', () => {
     expect(result.map(item => item.name)).toEqual(['Actual Business']);
   });
 
-  it('shows a fast partial result and then merges the slower provider', async () => {
+  it('uses authoritative Overpass results without duplicating the request through Photon', async () => {
     const repository: INearbyPlacesRepository = {
       searchNearby: jest.fn(() =>
         new Promise(resolve => {
@@ -200,13 +200,12 @@ describe('NearbyPlacesService', () => {
     );
 
     expect(partialResults).toHaveBeenCalledWith([
-      expect.objectContaining({ name: 'Fast Restaurant' }),
+      expect.objectContaining({ name: 'Detailed Restaurant' }),
     ]);
     expect(results.map(place => place.name)).toEqual([
-      'Fast Restaurant',
       'Detailed Restaurant',
     ]);
-    expect(fallbackProvider.searchPlaces).toHaveBeenCalledTimes(3);
+    expect(fallbackProvider.searchPlaces).not.toHaveBeenCalled();
   });
 
   it.each([
