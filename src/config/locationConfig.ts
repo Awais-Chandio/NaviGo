@@ -20,6 +20,12 @@ export const LOCATION_CONFIG = {
   /** Nearby coverage options; category taps use the widest and sort nearest-first. */
   NEARBY_RADIUS_STEPS_METERS: [2000, 5000, 10000],
 
+  /** Hard GPS-centred coverage for typed autocomplete results. */
+  TYPED_SEARCH_RADIUS_METERS: 25000,
+
+  /** Debounce public Photon autocomplete requests while preserving 1-char search. */
+  SEARCH_DEBOUNCE_MS: 300,
+
   /** Max high quality nearby results to return */
   MAX_NEARBY_RESULTS: 20,
 

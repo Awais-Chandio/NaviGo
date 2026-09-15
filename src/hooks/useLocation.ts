@@ -53,6 +53,13 @@ export function useLocation(isNavigating = false) {
       const controller = new AbortController();
       reverseAbortRef.current = controller;
       const sequence = ++reverseSequenceRef.current;
+      // The previous area's metadata must not constrain searches around a new
+      // GPS fix while reverse geocoding is still in flight (for example after
+      // crossing a country border or changing an emulator location).
+      setAddress('');
+      setDetectedArea('');
+      setDetectedCity('');
+      setDetectedCountryCode('');
       try {
         const res = await reverseGeocodeDetails(
           latitude,

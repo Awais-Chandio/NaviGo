@@ -21,6 +21,7 @@ import {
   getHaversineDistance,
   isValidCoordinate,
 } from '../utils/locationUtils';
+import { LOCATION_CONFIG } from '../config/locationConfig';
 
 interface SearchHeaderProps {
   userLocation: { latitude: number; longitude: number };
@@ -39,7 +40,6 @@ interface SearchHeaderProps {
 }
 
 const ItemSeparator = React.memo(() => <View style={styles.divider} />);
-const SEARCH_DEBOUNCE_MS = 180;
 
 function withoutDistance(item: SearchPlaceItem): SearchPlaceItem {
   return {
@@ -217,6 +217,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       const results = await geocodingService.searchPlaces(text, {
         userLocation: locationToUse,
         countryCode,
+        radiusMeters: LOCATION_CONFIG.TYPED_SEARCH_RADIUS_METERS,
         limit: 15,
         signal: controller.signal,
       });
@@ -280,7 +281,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
     setSearchResults([]);
     searchTimeoutRef.current = setTimeout(() => {
       executeSearch(searchText);
-    }, SEARCH_DEBOUNCE_MS);
+    }, LOCATION_CONFIG.SEARCH_DEBOUNCE_MS);
     return () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
       searchAbortRef.current?.abort();
