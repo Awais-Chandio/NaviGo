@@ -22,9 +22,15 @@ export interface NearbyPlace {
   category: string;
   distance: number;
   formattedDistance?: string;
+  roadDistance?: number;
+  formattedRoadDistance?: string;
   source?: PlaceProvider;
   objectType?: OsmObjectType;
   objectId?: string | number;
+  /** Present only when the upstream provider supplies a real importance value. */
+  importance?: number;
+  providerTags?: Record<string, string>;
+  rankingScore?: number;
 }
 
 export interface SavedPlace {

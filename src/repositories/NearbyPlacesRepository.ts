@@ -199,6 +199,7 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
               category: poi.category,
               distance,
               formattedDistance: formatDistance(distance),
+              source: 'offline',
             };
           });
           results.sort((a, b) => a.distance - b.distance);
@@ -397,6 +398,7 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
             source: 'overpass',
             objectType,
             objectId,
+            providerTags: tags,
           });
         }
 

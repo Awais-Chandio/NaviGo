@@ -17,6 +17,7 @@ export interface PlaceRankingInput {
   tags?: Record<string, string>;
   query?: string;
   searchMetadata?: string;
+  categoryMatched?: boolean;
 }
 
 function normalizeSearchText(value: string): string {
@@ -125,6 +126,7 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
     tags,
     query,
     searchMetadata,
+    categoryMatched = false,
   } = input;
 
   let distanceScore = 0;
@@ -167,7 +169,11 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
   // Importance Score
   const importanceScore = typeof importance === 'number' && !isNaN(importance)
     ? Math.min(50, Math.max(0, importance * 50))
-    : 25;
+    : 0;
+
+  // Structured provider tags prove category relevance. Typed search receives
+  // this bonus only when the typed prefix expresses that category intent.
+  const categoryScore = categoryMatched ? 250 : 0;
 
   // Text match score (when searching with query)
   const textMatchScore = calculateTextMatchScore(
@@ -191,6 +197,7 @@ export function calculateRankingScore(input: PlaceRankingInput): number {
   return (
     distanceScore +
     importanceScore +
+    categoryScore +
     metadataBonus +
     brandBonus +
     textMatchScore +

@@ -152,3 +152,22 @@ export function getCategoryTagValues(category: string): string[] {
       )
     : [category.trim().toLowerCase()];
 }
+
+export function matchesCategorySearchIntent(
+  category: string,
+  query: string,
+): boolean {
+  const definition = getPlaceCategory(category);
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!definition || !normalizedQuery) return false;
+  const intentTerms = [
+    definition.id,
+    definition.title,
+    ...(definition.aliases || []),
+    ...definition.searchQueries,
+  ].map(term => term.toLowerCase());
+  return intentTerms.some(
+    term =>
+      term.startsWith(normalizedQuery) || normalizedQuery.startsWith(term),
+  );
+}

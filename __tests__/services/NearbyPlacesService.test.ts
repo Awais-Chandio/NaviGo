@@ -45,7 +45,7 @@ describe('NearbyPlacesService', () => {
     expect(results[1].formattedDistance).toMatch(/^\d+\.\d km$/);
   });
 
-  it('replaces direct distances with road distances and sorts by the road result', async () => {
+  it('keeps Haversine distance for every result and enriches only the top result with road distance', async () => {
     const repository: INearbyPlacesRepository = {
       searchNearby: jest.fn().mockResolvedValue([
         {
@@ -82,11 +82,59 @@ describe('NearbyPlacesService', () => {
     });
 
     expect(results.map(place => place.id)).toEqual([
-      'road-nearest',
       'direct-nearest',
+      'road-nearest',
     ]);
-    expect(results[0].formattedDistance).toBe('900 m');
-    expect(results[1].formattedDistance).toBe('2.2 km');
+    expect(roadProvider.getDrivingDistances).toHaveBeenCalledWith(
+      { latitude: 25.396, longitude: 68.3578 },
+      [{ latitude: 25.4, longitude: 68.36 }],
+      undefined,
+    );
+    expect(results[0].roadDistance).toBe(2200);
+    expect(results[0].formattedRoadDistance).toBe('2.2 km');
+    expect(results[0].distance).toBeLessThan(results[1].distance);
+    expect(results[1].roadDistance).toBeUndefined();
+  });
+
+  it('uses the shared ranking model to prefer complete nearby POIs when distance is similar', async () => {
+    const repository: INearbyPlacesRepository = {
+      searchNearby: jest.fn().mockResolvedValue([
+        {
+          id: 'bare-place',
+          name: 'Unnamed Cafe',
+          latitude: 25.397,
+          longitude: 68.3578,
+          address: '',
+          category: 'cafe',
+          distance: 0,
+        },
+        {
+          id: 'complete-place',
+          name: 'Local Cafe',
+          latitude: 25.39701,
+          longitude: 68.3578,
+          address: 'Main Road, Saddar, Hyderabad',
+          category: 'cafe',
+          distance: 0,
+          providerTags: { opening_hours: '08:00-22:00' },
+        },
+      ]),
+    };
+    const service = new NearbyPlacesService(repository, {
+      getDrivingDistances: jest.fn(),
+    });
+
+    const results = await service.searchNearby({
+      latitude: 25.396,
+      longitude: 68.3578,
+      category: 'cafe',
+      includeRoadDistance: false,
+    });
+
+    expect(results.map(place => place.id)).toEqual([
+      'complete-place',
+      'bare-place',
+    ]);
   });
 
   it('returns nearby places without waiting for optional road-distance enrichment', async () => {

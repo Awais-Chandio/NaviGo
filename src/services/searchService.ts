@@ -26,6 +26,8 @@ export interface SearchPlaceItem {
   source?: PlaceProvider;
   objectType?: OsmObjectType;
   objectId?: string | number;
+  /** Present only when the upstream provider supplies a real importance value. */
+  importance?: number;
 }
 
 export interface SearchResult {

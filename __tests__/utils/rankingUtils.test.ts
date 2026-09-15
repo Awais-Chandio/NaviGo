@@ -97,4 +97,24 @@ describe('rankingUtils', () => {
 
     expect(nearbyHospital).toBeGreaterThan(fartherParking);
   });
+
+  it('uses real importance and structured category relevance without inventing defaults', () => {
+    const base = {
+      title: 'Local Place',
+      latitude: 25.396,
+      longitude: 68.3578,
+    };
+    const noProviderImportance = calculateRankingScore(base);
+    const realProviderImportance = calculateRankingScore({
+      ...base,
+      importance: 0.8,
+    });
+    const categoryMatch = calculateRankingScore({
+      ...base,
+      categoryMatched: true,
+    });
+
+    expect(realProviderImportance - noProviderImportance).toBe(40);
+    expect(categoryMatch - noProviderImportance).toBe(250);
+  });
 });

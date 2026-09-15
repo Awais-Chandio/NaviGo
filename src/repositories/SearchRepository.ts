@@ -29,6 +29,7 @@ import { offlineDatabaseService } from '../services/OfflineDatabaseService';
 import { connectivityService } from '../services/connectivityService';
 import {
   classifyPlaceTags,
+  matchesCategorySearchIntent,
   PLACE_CATEGORIES,
 } from '../config/placeCategories';
 import {
@@ -99,7 +100,7 @@ export function detectCategory(
   _displayName: string,
   categoryType?: string,
   providerTags: Record<string, unknown> = {},
-): { icon: string; name: string } {
+): { id?: string; icon: string; name: string } {
   const normalizedType = String(categoryType || '').toLowerCase();
   const definition =
     classifyPlaceTags(providerTags) ||
@@ -109,7 +110,11 @@ export function detectCategory(
       ),
     );
   if (definition) {
-    return { icon: definition.icon, name: definition.title };
+    return {
+      id: definition.id,
+      icon: definition.icon,
+      name: definition.title,
+    };
   }
   const dynamicName = normalizedType
     ? normalizedType.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase())
@@ -424,9 +429,15 @@ export class NominatimSearchRepository implements ISearchRepository {
             formattedDist = formatDistance(distanceMeters);
           }
 
-          const importance = typeof item.importance === 'number' ? item.importance : parseFloat(String(item.importance ?? 0.5));
+          const parsedImportance =
+            typeof item.importance === 'number'
+              ? item.importance
+              : parseFloat(String(item.importance ?? ''));
+          const importance = Number.isFinite(parsedImportance)
+            ? parsedImportance
+            : undefined;
 
-          let rankingScore = calculateRankingScore({
+          const rankingScore = calculateRankingScore({
             title,
             subtitle,
             latitude: lat,
@@ -437,20 +448,11 @@ export class NominatimSearchRepository implements ISearchRepository {
             namedetails,
             extratags: extratagsObj,
             query: trimmedQuery,
+            categoryMatched: matchesCategorySearchIntent(
+              category.id || '',
+              trimmedQuery,
+            ),
           });
-
-          // Distance Proximity Score Boost: Prioritize local city results (<25km) over distant cities/countries (>100km)
-          if (distanceMeters !== undefined) {
-            if (distanceMeters < 10000) {
-              rankingScore += 400; // Strong local boost
-            } else if (distanceMeters < 25000) {
-              rankingScore += 250; // City level boost
-            } else if (distanceMeters < 50000) {
-              rankingScore += 100;
-            } else if (distanceMeters > 500000) {
-              rankingScore -= 300; // Demote results > 500km away
-            }
-          }
 
           results.push({
             id: (item.place_id as string | number) || `place_${lat}_${lon}`,
@@ -464,6 +466,7 @@ export class NominatimSearchRepository implements ISearchRepository {
             categoryIcon: category.icon,
             categoryName: category.name,
             raw: item,
+            importance,
             rankingScore,
           });
         }
@@ -1060,6 +1063,10 @@ export class PhotonSearchRepository implements ISearchRepository {
             },
             query: trimmedQuery,
             searchMetadata,
+            categoryMatched: matchesCategorySearchIntent(
+              category.id || '',
+              trimmedQuery,
+            ),
           });
 
           const objectType = normalizeOsmObjectType(props.osm_type);

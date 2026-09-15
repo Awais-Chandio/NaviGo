@@ -19,6 +19,7 @@ import { isCallerAbort } from '../utils/networkUtils';
 import { logger } from '../utils/logger';
 import { LOCATION_CONFIG } from '../config/locationConfig';
 import { getPlaceCategory } from '../config/placeCategories';
+import { calculateRankingScore } from '../utils/rankingUtils';
 import {
   areSamePlace,
   type OsmObjectType,
@@ -44,13 +45,32 @@ export function recalculateNearbyDistances(
           place.longitude,
         ),
       );
+      const rankingScore = calculateRankingScore({
+        title: place.name,
+        subtitle: place.address,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        userLocation: { latitude, longitude },
+        maxRadiusMeters:
+          LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS[
+            LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS.length - 1
+          ],
+        importance: place.importance,
+        tags: place.providerTags,
+        categoryMatched: true,
+      });
       return {
         ...place,
         distance,
         formattedDistance: formatDistance(distance),
+        rankingScore,
       };
     })
-    .sort((first, second) => first.distance - second.distance);
+    .sort(
+      (first, second) =>
+        (second.rankingScore || 0) - (first.rankingScore || 0) ||
+        first.distance - second.distance,
+    );
 }
 
 interface NearbyFallbackSearchProvider {
@@ -75,6 +95,7 @@ interface NearbyFallbackSearchProvider {
       source?: PlaceProvider;
       objectType?: OsmObjectType;
       objectId?: string | number;
+      importance?: number;
     }>
   >;
 }
@@ -182,29 +203,29 @@ export class NearbyPlacesService {
     }
 
     try {
-      const roadDistances =
+      const topPlace = places[0];
+      const [roadDistance] =
         await this.drivingDistanceProvider.getDrivingDistances(
           { latitude: params.latitude, longitude: params.longitude },
-          places.map(place => ({
-            latitude: place.latitude,
-            longitude: place.longitude,
-          })),
+          [
+            {
+              latitude: topPlace.latitude,
+              longitude: topPlace.longitude,
+            },
+          ],
           signal,
         );
 
-      return places
-        .map((place, index) => {
-          const roadDistance = roadDistances[index];
-          if (typeof roadDistance !== 'number') {
-            return place;
-          }
-          return {
-            ...place,
-            distance: roadDistance,
-            formattedDistance: formatDistance(roadDistance),
-          };
-        })
-        .sort((first, second) => first.distance - second.distance);
+      if (typeof roadDistance !== 'number') return places;
+      return places.map((place, index) =>
+        index === 0
+          ? {
+              ...place,
+              roadDistance,
+              formattedRoadDistance: formatDistance(roadDistance),
+            }
+          : place,
+      );
     } catch (error) {
       if (isCallerAbort(error, signal)) throw error;
       logger.info(
@@ -245,17 +266,36 @@ export class NearbyPlacesService {
         areSamePlace(existing, place),
       );
       if (!duplicate) {
+        const rankingScore = calculateRankingScore({
+          title: place.name,
+          subtitle: place.address,
+          latitude: place.latitude,
+          longitude: place.longitude,
+          userLocation: {
+            latitude: params.latitude,
+            longitude: params.longitude,
+          },
+          maxRadiusMeters: nearbyRadiusMeters(params.radius),
+          importance: place.importance,
+          tags: place.providerTags,
+          categoryMatched: true,
+        });
         uniquePlaces.push({
           ...place,
           name: place.name.trim(),
           address: typeof place.address === 'string' ? place.address.trim() : '',
           distance: directDistance,
           formattedDistance: formatDistance(directDistance),
+          rankingScore,
         });
       }
     }
     return uniquePlaces
-      .sort((first, second) => first.distance - second.distance)
+      .sort(
+        (first, second) =>
+          (second.rankingScore || 0) - (first.rankingScore || 0) ||
+          first.distance - second.distance,
+      )
       .slice(0, LOCATION_CONFIG.MAX_NEARBY_RESULTS);
   }
 
@@ -314,6 +354,9 @@ export class NearbyPlacesService {
         if (!matchesNearbyCategory(categoryKey, { [key]: value })) {
           return places;
         }
+        const providerTags = key && value
+          ? { [key]: String(value) }
+          : undefined;
         const directDistance = Math.round(
           getHaversineDistance(
             params.latitude,
@@ -335,6 +378,8 @@ export class NearbyPlacesService {
           source: result.source || 'photon',
           objectType: result.objectType,
           objectId: result.objectId,
+          importance: result.importance,
+          providerTags,
         });
         return places;
       }, [])
