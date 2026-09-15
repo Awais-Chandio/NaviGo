@@ -199,28 +199,14 @@ export default function MapScreen() {
   } | null>(null);
   const nearbyAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    const canSearch =
-      selectedCategory &&
-      activeCategoryConfig &&
-      !activeCategoryConfig.isSavedPlace &&
-      hasValidLocationFix;
-    if (!canSearch) {
-      nearbyAbortRef.current?.abort();
-      nearbyAbortRef.current = null;
-      setIsLoadingNearby(false);
-      return;
-    }
+  const canSearchNearby =
+    !!selectedCategory &&
+    !!activeCategoryConfig &&
+    !activeCategoryConfig.isSavedPlace &&
+    hasValidLocationFix;
 
-    if (lastFetchedLocationRef.current) {
-      const distMoved = getHaversineDistance(
-        lastFetchedLocationRef.current.latitude,
-        lastFetchedLocationRef.current.longitude,
-        location.latitude,
-        location.longitude,
-      );
-      if (distMoved < LOCATION_CONFIG.NEARBY_REQUERY_THRESHOLD_METERS) return;
-    }
+  const runNearbySearch = useCallback(() => {
+    if (!canSearchNearby || !activeCategoryConfig) return;
 
     lastFetchedLocationRef.current = {
       latitude: location.latitude,
@@ -239,7 +225,6 @@ export default function MapScreen() {
           longitude: location.longitude,
           category: activeCategoryConfig.category,
           countryCode: detectedCountryCode || undefined,
-          radius: LOCATION_CONFIG.DEFAULT_NEARBY_SEARCH_RADIUS_KM,
           // Render places after the first API response instead of waiting for
           // a second road-distance matrix request.
           includeRoadDistance: false,
@@ -274,12 +259,57 @@ export default function MapScreen() {
       });
   }, [
     activeCategoryConfig,
+    canSearchNearby,
     detectedCountryCode,
-    hasValidLocationFix,
     location.latitude,
     location.longitude,
-    selectedCategory,
   ]);
+
+  useEffect(() => {
+    if (!canSearchNearby) {
+      nearbyAbortRef.current?.abort();
+      nearbyAbortRef.current = null;
+      setIsLoadingNearby(false);
+      return;
+    }
+
+    if (lastFetchedLocationRef.current) {
+      const distMoved = getHaversineDistance(
+        lastFetchedLocationRef.current.latitude,
+        lastFetchedLocationRef.current.longitude,
+        location.latitude,
+        location.longitude,
+      );
+      if (distMoved < LOCATION_CONFIG.NEARBY_REQUERY_THRESHOLD_METERS) return;
+    }
+
+    runNearbySearch();
+    // Only the location/category identity should decide whether a fresh
+    // search is due; runNearbySearch itself is stable across re-renders that
+    // do not change those values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeCategoryConfig,
+    canSearchNearby,
+    location.latitude,
+    location.longitude,
+  ]);
+
+  // A nearby search that failed because the network was down must recover on
+  // its own once connectivity returns, rather than waiting for the user to
+  // move far enough or switch categories to trigger the next query.
+  const wasOfflineRef = useRef<boolean>(false);
+  useEffect(() => {
+    const unsubscribe = connectivityService.subscribe(state => {
+      const wasOffline = wasOfflineRef.current;
+      wasOfflineRef.current = !state.isOnline;
+      if (wasOffline && state.isOnline && canSearchNearby && nearbyError) {
+        lastFetchedLocationRef.current = null;
+        runNearbySearch();
+      }
+    });
+    return unsubscribe;
+  }, [canSearchNearby, nearbyError, runNearbySearch]);
 
   useEffect(
     () => () => {
@@ -898,7 +928,7 @@ export default function MapScreen() {
           <Camera
             ref={cameraRef}
             initialViewState={{
-              zoom: currentZoom,
+              zoom: hasValidLocationFix ? currentZoom : 2,
               center: [markerLng, markerLat],
             }}
           />

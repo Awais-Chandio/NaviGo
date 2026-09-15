@@ -9,6 +9,11 @@ import { LOCATION_CONFIG } from '../config/locationConfig';
 import { logger } from '../utils/logger';
 import { fetchWithTimeout, isCallerAbort } from '../utils/networkUtils';
 import { offlineDatabaseService } from '../services/OfflineDatabaseService';
+import {
+  getPlaceCategory,
+  matchesPlaceCategory,
+  PLACE_CATEGORIES,
+} from '../config/placeCategories';
 
 const TAG = 'NearbyPlacesService';
 const MAX_NEARBY_CACHE_ENTRIES = 50;
@@ -23,83 +28,31 @@ export interface CategoryQueryConfig {
   overpassFilters: string[];
 }
 
-export const CATEGORY_MAP: Record<string, CategoryQueryConfig> = {
-  food: {
-    osmQuery: 'restaurant',
-    overpassFilters: ['nwr["amenity"~"restaurant|fast_food|food_court"]'],
-  },
-  restaurant: {
-    osmQuery: 'restaurant',
-    overpassFilters: ['nwr["amenity"~"restaurant|fast_food|food_court"]'],
-  },
-  cafe: {
-    osmQuery: 'cafe',
-    overpassFilters: ['nwr["amenity"="cafe"]'],
-  },
-  atm: {
-    osmQuery: 'atm',
-    overpassFilters: ['nwr["amenity"="atm"]'],
-  },
-  bank: {
-    osmQuery: 'bank',
-    overpassFilters: ['nwr["amenity"~"atm|bank"]'],
-  },
-  fuel: {
-    osmQuery: 'fuel',
-    overpassFilters: ['nwr["amenity"="fuel"]'],
-  },
-  petrol: {
-    osmQuery: 'fuel',
-    overpassFilters: ['nwr["amenity"="fuel"]'],
-  },
-  hospital: {
-    osmQuery: 'hospital',
-    overpassFilters: [
-      'nwr["amenity"~"hospital|clinic"]',
-      'nwr["healthcare"~"hospital|clinic|centre"]',
-    ],
-  },
-  pharmacy: {
-    osmQuery: 'pharmacy',
-    overpassFilters: ['nwr["amenity"="pharmacy"]', 'nwr["shop"="chemist"]'],
-  },
-  hotel: {
-    osmQuery: 'hotel',
-    overpassFilters: ['nwr["tourism"~"hotel|motel|guest_house|hostel"]'],
-  },
-  parking: {
-    osmQuery: 'parking',
-    overpassFilters: [
-      'nwr["amenity"~"parking|parking_space|parking_entrance"]',
-    ],
-  },
-  shopping: {
-    osmQuery: 'supermarket',
-    overpassFilters: [
-      'nwr["shop"~"supermarket|mall|department_store|convenience|grocery|clothes"]',
-    ],
-  },
-  grocery: {
-    osmQuery: 'supermarket',
-    overpassFilters: [
-      'nwr["shop"~"supermarket|mall|department_store|convenience|grocery|clothes"]',
-    ],
-  },
-  supermarket: {
-    osmQuery: 'supermarket',
-    overpassFilters: [
-      'nwr["shop"~"supermarket|mall|department_store|convenience|grocery|clothes"]',
-    ],
-  },
-  school: {
-    osmQuery: 'school',
-    overpassFilters: ['nwr["amenity"="school"]'],
-  },
-  university: {
-    osmQuery: 'university',
-    overpassFilters: ['nwr["amenity"~"university|college"]'],
-  },
-};
+export const CATEGORY_MAP: Record<string, CategoryQueryConfig> =
+  PLACE_CATEGORIES.reduce<Record<string, CategoryQueryConfig>>(
+    (categoryMap, definition) => {
+      const config = {
+        osmQuery: definition.searchQueries[0],
+        overpassFilters: Object.entries(definition.osmTags).map(
+          ([key, values]) =>
+            `nwr["${key}"~"^(${values.join('|')})$"]`,
+        ),
+      };
+      for (const key of [definition.id, ...(definition.aliases || [])]) {
+        categoryMap[key] = config;
+      }
+      return categoryMap;
+    },
+    {},
+  );
+
+/** Match provider tags against the same category rules used for nearby queries. */
+export function matchesNearbyCategory(
+  category: string,
+  tags: Record<string, unknown>,
+): boolean {
+  return matchesPlaceCategory(category, tags);
+}
 
 export interface INearbyPlacesRepository {
   searchNearby(
@@ -175,7 +128,7 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
       logger.info(TAG, 'Search skipped: Invalid or missing GPS coordinates.');
       return [];
     }
-    if (!CATEGORY_MAP[category]) {
+    if (!getPlaceCategory(category)) {
       logger.warn(TAG, `Unsupported nearby category: ${category}`);
       return [];
     }
@@ -186,9 +139,11 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
       params.radius > 0
         ? Math.min(10000, Math.max(100, Math.round(params.radius * 1000)))
         : null;
-    const radiusStepsMeters = requestedRadiusMeters
-      ? [requestedRadiusMeters]
-      : LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS;
+    const widestNearbyRadius =
+      LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS[
+        LOCATION_CONFIG.NEARBY_RADIUS_STEPS_METERS.length - 1
+      ];
+    const radiusStepsMeters = [requestedRadiusMeters || widestNearbyRadius];
     const cacheKey = this.getCacheKey(
       category,
       latitude,
@@ -227,13 +182,13 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
     const fetchPromise = (async () => {
       const startedAt = Date.now();
       try {
-        const isOnline = connectivityService.isOnlineMode();
-        if (!isOnline) {
+        if (connectivityService.getMode() === 'offline') {
           logger.info(TAG, `Offline mode detected: querying local SQLite POI database for category "${category}".`);
           const offlinePois = await offlineDatabaseService.getPOIsByCategory(
             category,
             latitude,
             longitude,
+            radiusStepsMeters[radiusStepsMeters.length - 1] / 1000,
           );
           const results: NearbyPlace[] = offlinePois.map(poi => {
             const distance = Math.round(
@@ -402,19 +357,23 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
           }
 
           const tags = (element.tags as Record<string, string>) || {};
-          const name =
+          if (!matchesNearbyCategory(category, tags)) continue;
+          const rawName =
             tags['name:en'] || tags.name || tags.brand || tags.operator;
 
-          // QUALITY FILTER: Ignore unnamed places or generic spot fallbacks
-          if (
-            !name ||
-            name.trim().length === 0 ||
-            name.toLowerCase().includes('spot') ||
-            name.toLowerCase().includes('unknown place') ||
-            name.toLowerCase() === 'unnamed'
-          ) {
-            continue;
-          }
+          // A place with no usable name is still a real, useful result (an
+          // unmarked ATM or parking entrance, for example). Give it an honest
+          // category-based label instead of inventing a name or dropping a
+          // valid POI outright; only literal provider junk text is replaced.
+          const isUsableName =
+            !!rawName &&
+            rawName.trim().length > 0 &&
+            !rawName.toLowerCase().includes('spot') &&
+            !rawName.toLowerCase().includes('unknown place') &&
+            rawName.toLowerCase() !== 'unnamed';
+          const name = isUsableName
+            ? rawName
+            : `Unnamed ${getPlaceCategory(category)?.title || category}`;
 
           const streetAddress = [
             tags['addr:housenumber'],
@@ -432,10 +391,7 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
             Boolean(part) && allParts.indexOf(part) === partIndex,
           );
 
-          const address =
-            tags['addr:full'] ||
-            addressParts.join(', ') ||
-            `${this.getFormattedCategoryTitle(category)} near location`;
+          const address = tags['addr:full'] || addressParts.join(', ');
 
           places.push({
             id: `overpass_${String(element.type || 'element')}_${
@@ -511,9 +467,5 @@ export class OverpassNearbyPlacesRepository implements INearbyPlacesRepository {
           });
       });
     });
-  }
-  private getFormattedCategoryTitle(category: string): string {
-    if (!category) return 'Nearby';
-    return category.charAt(0).toUpperCase() + category.slice(1).toLowerCase();
   }
 }

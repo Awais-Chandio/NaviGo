@@ -3,6 +3,7 @@ import {
   PhotonSearchRepository,
   detectCategory,
   parseNominatimTitleAndSubtitle,
+  MIN_SEARCH_QUERY_LENGTH,
 } from '../repositories/SearchRepository';
 import { logger } from '../utils/logger';
 
@@ -70,7 +71,7 @@ export interface PlacesProvider {
   ): Promise<string>;
 }
 
-export { detectCategory, parseNominatimTitleAndSubtitle };
+export { detectCategory, parseNominatimTitleAndSubtitle, MIN_SEARCH_QUERY_LENGTH };
 
 export class NominatimPlacesProvider implements PlacesProvider {
   private repository: ISearchRepository = new PhotonSearchRepository();

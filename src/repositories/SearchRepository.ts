@@ -27,11 +27,22 @@ import {
 } from '../utils/networkUtils';
 import { offlineDatabaseService } from '../services/OfflineDatabaseService';
 import { connectivityService } from '../services/connectivityService';
+import {
+  classifyPlaceTags,
+  PLACE_CATEGORIES,
+} from '../config/placeCategories';
 
 const TAG = 'SearchRepository';
 const MAX_SEARCH_CACHE_ENTRIES = 100;
 const AUTOCOMPLETE_TIMEOUT_MS = 5000;
 const DEFAULT_LOCAL_AUTOCOMPLETE_RADIUS_METERS = 50000;
+/**
+ * Autocomplete must be usable from the very first typed character (p, pi,
+ * piz, pizza…). A single character still fires a location-biased, bounded
+ * query, so noise is contained by the GPS bounding box and the shared
+ * ranking model rather than by refusing to search at all.
+ */
+export const MIN_SEARCH_QUERY_LENGTH = 1;
 
 export interface ISearchRepository {
   searchPlaces(query: string, options?: SearchOptions): Promise<SearchPlaceItem[]>;
@@ -97,84 +108,25 @@ export function normalizeDetectedCity(city: string, county: string): string {
 }
 
 export function detectCategory(
-  displayName: string,
+  _displayName: string,
   categoryType?: string,
+  providerTags: Record<string, unknown> = {},
 ): { icon: string; name: string } {
-  const text = (displayName + ' ' + (categoryType || '')).toLowerCase();
-
-  if (
-    text.includes('fuel') ||
-    text.includes('gas') ||
-    text.includes('petrol') ||
-    text.includes('cng') ||
-    text.includes('pso') ||
-    text.includes('shell') ||
-    text.includes('total')
-  ) {
-    return { icon: '⛽', name: 'Gas Station' };
+  const normalizedType = String(categoryType || '').toLowerCase();
+  const definition =
+    classifyPlaceTags(providerTags) ||
+    PLACE_CATEGORIES.find(candidate =>
+      Object.values(candidate.osmTags).some(values =>
+        values.includes(normalizedType),
+      ),
+    );
+  if (definition) {
+    return { icon: definition.icon, name: definition.title };
   }
-  if (
-    text.includes('restaurant') ||
-    text.includes('food') ||
-    text.includes('cafe') ||
-    text.includes('pizza') ||
-    text.includes('burger') ||
-    text.includes('dining') ||
-    text.includes('bakery')
-  ) {
-    return { icon: '🍔', name: 'Restaurant' };
-  }
-  if (
-    text.includes('hospital') ||
-    text.includes('clinic') ||
-    text.includes('medical') ||
-    text.includes('doctor') ||
-    text.includes('health')
-  ) {
-    return { icon: '🏥', name: 'Hospital' };
-  }
-  if (text.includes('pharmacy') || text.includes('chemist') || text.includes('drugstore')) {
-    return { icon: '💊', name: 'Pharmacy' };
-  }
-  if (
-    text.includes('atm') ||
-    text.includes('bank') ||
-    text.includes('cash') ||
-    text.includes('finance')
-  ) {
-    return { icon: '🏧', name: 'ATM & Bank' };
-  }
-  if (
-    text.includes('hotel') ||
-    text.includes('resort') ||
-    text.includes('lodging') ||
-    text.includes('inn') ||
-    text.includes('stay') ||
-    text.includes('hostel')
-  ) {
-    return { icon: '🏨', name: 'Hotel' };
-  }
-  if (
-    text.includes('mall') ||
-    text.includes('market') ||
-    text.includes('bazaar') ||
-    text.includes('shopping') ||
-    text.includes('store') ||
-    text.includes('supermarket')
-  ) {
-    return { icon: '🛒', name: 'Shopping' };
-  }
-  if (text.includes('school') || text.includes('academy')) {
-    return { icon: '🏫', name: 'School' };
-  }
-  if (text.includes('university') || text.includes('college')) {
-    return { icon: '🎓', name: 'University' };
-  }
-  if (text.includes('parking')) {
-    return { icon: '🅿️', name: 'Parking' };
-  }
-
-  return { icon: '📍', name: 'Location' };
+  const dynamicName = normalizedType
+    ? normalizedType.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase())
+    : 'Location';
+  return { icon: '📍', name: dynamicName };
 }
 
 export function parseNominatimTitleAndSubtitle(
@@ -182,9 +134,7 @@ export function parseNominatimTitleAndSubtitle(
   namedetails?: Record<string, string>,
   address?: Record<string, string>,
 ): { title: string; subtitle: string } {
-  if (!displayName) {
-    return { title: 'Unknown Place', subtitle: '' };
-  }
+  if (!displayName) return { title: '', subtitle: '' };
 
   const parts = displayName.split(',').map(p => p.trim());
   let title = parts[0] || displayName;
@@ -266,7 +216,7 @@ async function searchStoredOfflinePOIs(
           ),
         )
       : undefined;
-    const category = detectCategory(`${poi.name} ${poi.category}`);
+    const category = detectCategory('', poi.category);
     return {
       id: poi.id,
       title: poi.name,
@@ -282,7 +232,12 @@ async function searchStoredOfflinePOIs(
       categoryIcon: category.icon,
       categoryName: poi.category,
     };
-  });
+  }).filter(place =>
+    calculateTextMatchScore(place.title, place.subtitle, query, place.categoryName) > 0 &&
+    (!hasUserLocation ||
+      (typeof place.distanceMeters === 'number' &&
+        place.distanceMeters <= (options?.radiusMeters ?? DEFAULT_LOCAL_AUTOCOMPLETE_RADIUS_METERS))),
+  );
 }
 
 async function getStoredOfflineLocationDetails(
@@ -329,10 +284,10 @@ export class NominatimSearchRepository implements ISearchRepository {
     options?: SearchOptions,
   ): Promise<SearchPlaceItem[]> {
     const trimmedQuery = query.trim();
-    if (trimmedQuery.length < 2) {
+    if (trimmedQuery.length < MIN_SEARCH_QUERY_LENGTH) {
       return [];
     }
-    if (!connectivityService.isOnlineMode()) {
+    if (connectivityService.getMode() === 'offline') {
       return searchStoredOfflinePOIs(trimmedQuery, options);
     }
 
@@ -384,7 +339,7 @@ export class NominatimSearchRepository implements ISearchRepository {
 
         let data: unknown = [];
 
-        // Primary query: Bounded search FIRST to strictly return local area results (e.g. Hyderabad)
+        // Query the current GPS area first so category fallback stays local.
         if (viewboxBoundedParam) {
           const boundedUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
             trimmedQuery,
@@ -459,7 +414,11 @@ export class NominatimSearchRepository implements ISearchRepository {
           }
           const itemType = typeof item.type === 'string' ? item.type : undefined;
           const itemCat = typeof item.category === 'string' ? item.category : undefined;
-          const category = detectCategory(displayName, itemType || itemCat);
+          const category = detectCategory(
+            displayName,
+            itemType,
+            itemCat && itemType ? { [itemCat]: itemType } : {},
+          );
 
           let distanceMeters: number | undefined;
           let formattedDist: string | undefined;
@@ -516,6 +475,7 @@ export class NominatimSearchRepository implements ISearchRepository {
             formattedDistance: formattedDist,
             categoryIcon: category.icon,
             categoryName: category.name,
+            raw: item,
             rankingScore,
           });
         }
@@ -773,7 +733,7 @@ export class NominatimSearchRepository implements ISearchRepository {
       source: 'saved' as const,
     }));
 
-    if (trimmed.length < 2) {
+    if (trimmed.length < MIN_SEARCH_QUERY_LENGTH) {
       return {
         recent: recents,
         saved,
@@ -862,7 +822,7 @@ export class PhotonSearchRepository implements ISearchRepository {
       ? options!.userLocation!.longitude.toFixed(3)
       : 'none';
     const country = options?.countryCode?.toUpperCase() || 'ALL';
-    return `${qNorm}_${latGrid}_${lonGrid}_${country}_${options?.limit || 15}`;
+    return `${qNorm}_${latGrid}_${lonGrid}_${country}_${options?.limit || 15}_${options?.radiusMeters ?? DEFAULT_LOCAL_AUTOCOMPLETE_RADIUS_METERS}`;
   }
 
   public async searchPlaces(
@@ -870,10 +830,10 @@ export class PhotonSearchRepository implements ISearchRepository {
     options?: SearchOptions,
   ): Promise<SearchPlaceItem[]> {
     const trimmedQuery = query.trim();
-    if (trimmedQuery.length < 2) {
+    if (trimmedQuery.length < MIN_SEARCH_QUERY_LENGTH) {
       return [];
     }
-    if (!connectivityService.isOnlineMode()) {
+    if (connectivityService.getMode() === 'offline') {
       logger.info(TAG, 'Offline mode: searching downloaded place data.');
       return searchStoredOfflinePOIs(trimmedQuery, options);
     }
@@ -1032,26 +992,29 @@ export class PhotonSearchRepository implements ISearchRepository {
 
           // Keep provider metadata consistent with the requested country.
           const countryCode = String(props.countrycode || props.country_code || '').toLowerCase();
-          const country = String(props.country || '').toLowerCase();
           const requestedCountryLower = requestedCountryCode?.toLowerCase();
           const matchesRequestedCountry =
-            !requestedCountryLower ||
-            countryCode === requestedCountryLower ||
-            (requestedCountryCode === 'PK' &&
-              (countryCode === 'pak' || country.includes('pakistan')));
+            !requestedCountryLower || countryCode === requestedCountryLower;
           if (!matchesRequestedCountry) continue;
 
-          const name = String(props.name || props.title || '').trim();
+          const rawName = String(props.name || props.title || '').trim();
+          const category = detectCategory('', String(props.osm_value || ''), {
+            [String(props.osm_key || '')]: props.osm_value,
+          });
 
-          // Reject unnamed places or generic placeholder titles
-          if (
-            !name ||
-            name.toLowerCase().includes('spot') ||
-            name.toLowerCase().includes('unknown place') ||
-            name.toLowerCase() === 'unnamed'
-          ) {
-            continue;
-          }
+          // A missing or generic placeholder title (e.g. Photon's own
+          // "Unknown place") does not make this an invalid result. Typed
+          // text search still filters it out below via the text-match score,
+          // since a made-up label cannot genuinely match a real query; this
+          // only keeps the place alive for location-based category browsing
+          // (nearby-category taps that fall back to this provider), where an
+          // honest "Unnamed <Category>" label beats silently dropping a real
+          // POI or inventing a specific business name.
+          const isUsableName =
+            !!rawName &&
+            !rawName.toLowerCase().includes('unknown place') &&
+            rawName.toLowerCase() !== 'unnamed';
+          const name = isUsableName ? rawName : `Unnamed ${category.name}`;
 
           const street = String(props.street || props.road || '').trim();
           const district = String(props.district || props.suburb || props.neighbourhood || '').trim();
@@ -1071,9 +1034,6 @@ export class PhotonSearchRepository implements ISearchRepository {
           const subtitle = Array.from(new Set(subtitleParts)).join(', ');
           if (!subtitle) continue;
 
-          const category = detectCategory(
-            `${name} ${String(props.osm_key || '')} ${String(props.osm_value || '')}`,
-          );
           const searchMetadata = `${String(props.osm_key || '')} ${String(
             props.osm_value || '',
           )}`;
@@ -1142,8 +1102,8 @@ export class PhotonSearchRepository implements ISearchRepository {
           }
         }
 
-        // When the provider returns at least one result in the current city /
-        // nearby region, do not contaminate autocomplete with far-away places.
+        // Enforce circular local coverage even when the provider only returns
+        // distant matches or places in the corners of the bounding box.
         const localResults = userLoc
           ? uniqueResults.filter(
               result =>
@@ -1152,7 +1112,7 @@ export class PhotonSearchRepository implements ISearchRepository {
             )
           : [];
         const rankedResults =
-          userLoc && localResults.length > 0 ? localResults : uniqueResults;
+          userLoc ? localResults : uniqueResults;
 
         rankedResults.sort((a, b) => b.rankingScore - a.rankingScore);
 
@@ -1227,7 +1187,7 @@ export class PhotonSearchRepository implements ISearchRepository {
         detectedArea: 'Current Location',
       };
     }
-    if (!connectivityService.isOnlineMode()) {
+    if (connectivityService.getMode() === 'offline') {
       return getStoredOfflineLocationDetails(latitude, longitude);
     }
 
@@ -1355,7 +1315,7 @@ export class PhotonSearchRepository implements ISearchRepository {
       source: 'saved' as const,
     }));
 
-    if (trimmed.length < 2) {
+    if (trimmed.length < MIN_SEARCH_QUERY_LENGTH) {
       return {
         recent: recents,
         saved,

@@ -48,6 +48,29 @@ describe('offlineRegionDataService', () => {
     });
   });
 
+  test('keeps a real POI with no OSM name tag under an honest fallback label', () => {
+    const pois = parseOfflinePOIs(
+      {
+        elements: [
+          {
+            type: 'node',
+            id: 11,
+            lat: 25.396,
+            lon: 68.3578,
+            tags: { amenity: 'atm' },
+          },
+        ],
+      },
+      { id: 'hyderabad', name: 'Hyderabad' },
+    );
+
+    // A missing name must never drop a real, correctly-tagged POI, and must
+    // never invent a specific business name that was not in the source data.
+    expect(pois).toHaveLength(1);
+    expect(pois[0].name).toBe('Unnamed Atm');
+    expect(pois[0].category).toBe('atm');
+  });
+
   test('creates edges from real OSM way geometry and respects one-way roads', () => {
     const graph = parseOfflineRoutingGraph(
       {

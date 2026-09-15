@@ -111,8 +111,19 @@ async function fetchOverpassPayload(query: string): Promise<OverpassPayload> {
     : new Error('Offline data servers are unavailable.');
 }
 
-function getPOICategory(tags: OverpassTags): string | null {
-  return tags.amenity || tags.tourism || tags.leisure || tags.shop || null;
+function getPOICategory(
+  tags: OverpassTags,
+): { key: string; value: string } | null {
+  for (const key of ['amenity', 'tourism', 'leisure', 'shop'] as const) {
+    if (tags[key]) return { key, value: tags[key]! };
+  }
+  return null;
+}
+
+function formatCategoryLabel(value: string): string {
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, letter => letter.toUpperCase());
 }
 
 function getPOIAddress(tags: OverpassTags, regionName: string): string {
@@ -156,11 +167,21 @@ export function parseOfflinePOIs(
     if (seen.has(id)) continue;
     seen.add(id);
     const tags = element.tags;
+    // A missing OSM name tag does not make the POI invalid: keep it with an
+    // honest, category-derived label rather than discarding a real place or
+    // inventing a specific name that was never in the source data.
+    const name =
+      tags.name ||
+      tags['name:en'] ||
+      tags.brand ||
+      tags.operator ||
+      `Unnamed ${formatCategoryLabel(category.value)}`;
     pois.push({
       id,
-      name: tags.name || tags['name:en'] || category.replace(/_/g, ' '),
-      category,
-      subCategory: tags.cuisine || tags.shop || category,
+      name,
+      category: category.value,
+      categoryKey: category.key,
+      subCategory: tags.cuisine || tags.shop || category.value,
       latitude,
       longitude,
       address: getPOIAddress(tags, region.name),

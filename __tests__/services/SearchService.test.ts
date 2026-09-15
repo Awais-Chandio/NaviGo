@@ -1,9 +1,76 @@
-import { searchService } from '../../src/services/searchService';
-import { normalizeDetectedCity } from '../../src/repositories/SearchRepository';
+import { detectCategory, searchService } from '../../src/services/searchService';
+import { PhotonSearchRepository, normalizeDetectedCity } from '../../src/repositories/SearchRepository';
 import { connectivityService } from '../../src/services/connectivityService';
 import { offlineDatabaseService } from '../../src/services/OfflineDatabaseService';
 
 describe('SearchService', () => {
+  it('uses provider types instead of guessing a category from the name', () => {
+    expect(
+      detectCategory('Hospital Road', 'residential', {
+        highway: 'residential',
+      }).name,
+    ).toBe('Residential');
+    expect(
+      detectCategory('Any provider name', 'hospital', {
+        amenity: 'hospital',
+      }).name,
+    ).toBe('Hospital');
+  });
+
+  it('does not reuse a wider radius cache or return distant-only matches', async () => {
+    const repository = new PhotonSearchRepository();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ features: [{
+        geometry: { coordinates: [68.3578, 25.44] },
+        properties: { osm_id: 9876, name: 'Radius Cafe', city: 'Hyderabad', osm_value: 'cafe' },
+      }] }),
+    } as Response);
+    try {
+      const options = { userLocation: { latitude: 25.396, longitude: 68.3578 } };
+      expect(await repository.searchPlaces('Radius', { ...options, radiusMeters: 10000 })).toHaveLength(1);
+      expect(await repository.searchPlaces('Radius', { ...options, radiusMeters: 2000 })).toEqual([]);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('labels a nameless provider feature honestly instead of dropping it, for category browsing', async () => {
+    const repository = new PhotonSearchRepository();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        features: [
+          {
+            geometry: { coordinates: [68.3578, 25.397] },
+            properties: {
+              osm_id: 4321,
+              city: 'Hyderabad',
+              osm_key: 'amenity',
+              osm_value: 'cafe',
+              // No name/title: a real cafe that OSM never tagged with a name.
+            },
+          },
+        ],
+      }),
+    } as Response);
+    try {
+      // This mirrors how NearbyPlacesService falls back to Photon using a
+      // category alias (e.g. "cafe") rather than a user-typed name.
+      const results = await repository.searchPlaces('cafe', {
+        userLocation: { latitude: 25.396, longitude: 68.3578 },
+      });
+      expect(results).toEqual([
+        expect.objectContaining({ title: 'Unnamed Cafe' }),
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('normalizes a taluka result to its parent city district', () => {
     expect(normalizeDetectedCity('Latifabad Taluka', 'Hyderabad District')).toBe(
       'Hyderabad',
@@ -13,9 +80,50 @@ describe('SearchService', () => {
     );
   });
 
-  it('returns empty array when query length is less than 2 characters', async () => {
-    const results = await searchService.search('a');
-    expect(results).toEqual([]);
+  it('returns empty array for an empty or whitespace-only query', async () => {
+    expect(await searchService.search('')).toEqual([]);
+    expect(await searchService.search('   ')).toEqual([]);
+  });
+
+  it('is usable from the first typed character, bounded by the current GPS area', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        features: [
+          {
+            geometry: { coordinates: [68.3578, 25.397] },
+            properties: {
+              osm_id: 111,
+              name: 'Pizza Point',
+              city: 'Hyderabad',
+              osm_key: 'amenity',
+              osm_value: 'restaurant',
+            },
+          },
+        ],
+      }),
+    } as Response);
+    globalThis.fetch = fetchMock;
+    try {
+      const results = await searchService.search('p', {
+        latitude: 25.396,
+        longitude: 68.3578,
+      });
+      // A single character still reaches the provider (no early "too short"
+      // guard) with the query text and a location bias applied, and still
+      // comes back through the same ranking/distance pipeline as any other
+      // query length.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const requestedUrl = String(fetchMock.mock.calls[0][0]);
+      expect(requestedUrl).toContain('q=p');
+      expect(requestedUrl).toContain('lat=25.396');
+      expect(results).toEqual([
+        expect.objectContaining({ name: 'Pizza Point', category: 'Food' }),
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('aggregates suggestions across recent, saved, nearby, and search results', async () => {
@@ -221,7 +329,7 @@ describe('SearchService', () => {
 
     try {
       const results = await searchService.searchPlaces(
-        'unique dynamic country mall',
+        'dynamic country mall',
         { userLocation: { latitude: 25.2048, longitude: 55.2708 } },
       );
       const requestedUrl = String(fetchMock.mock.calls[0][0]);
@@ -267,7 +375,7 @@ describe('SearchService', () => {
     } as unknown as Response);
 
     try {
-      const results = await searchService.searchPlaces('unique city cafe', {
+      const results = await searchService.searchPlaces('city cafe', {
         userLocation: { latitude: 25.396, longitude: 68.3578 },
       });
       expect(results).toHaveLength(1);

@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { geocodingService } from '../services/geocodingService';
-import { type SearchPlaceItem } from '../services/searchService';
+import { type SearchPlaceItem, MIN_SEARCH_QUERY_LENGTH } from '../services/searchService';
 import { SavedPlace } from '../services/storageService';
 import { NavigationState } from '../hooks/useNavigation';
 import { SearchBar } from './SearchBar';
@@ -208,6 +208,12 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
           ? { latitude: userLatitude, longitude: userLongitude }
           : undefined;
 
+      if (!locationToUse) {
+        setIsSearching(false);
+        setSearchResults([]);
+        setSearchError('Waiting for your current location. Enable location to search nearby.');
+        return;
+      }
       const results = await geocodingService.searchPlaces(text, {
         userLocation: locationToUse,
         countryCode,
@@ -247,26 +253,40 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const handleTextChange = useCallback((text: string) => {
     setSearchText(text);
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+    setSearchResults([]);
+    setSearchError(null);
+    setIsSearching(text.trim().length >= MIN_SEARCH_QUERY_LENGTH);
 
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    if (text.trim().length < 2) {
+    if (text.trim().length < MIN_SEARCH_QUERY_LENGTH) {
       setSearchResults([]);
       setIsSearching(false);
       setHasSearched(false);
       setSearchError(null);
-      if (searchAbortRef.current) {
-        searchAbortRef.current.abort();
-      }
       return;
     }
 
+  }, []);
+
+  useEffect(() => {
+    if (!isFocused || searchText.trim().length < MIN_SEARCH_QUERY_LENGTH) return;
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+    setSearchResults([]);
     searchTimeoutRef.current = setTimeout(() => {
-      executeSearch(text);
+      executeSearch(searchText);
     }, SEARCH_DEBOUNCE_MS);
-  }, [executeSearch]);
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
+    };
+  }, [executeSearch, isFocused, searchText]);
 
   const handleSelectItem = useCallback((item: SearchPlaceItem) => {
     Keyboard.dismiss();
@@ -403,7 +423,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         <View style={styles.statusContainer}>
           <Text style={styles.errorText}>{searchError}</Text>
         </View>
-      ) : hasSearched && !isSearching && searchText.length >= 2 ? (
+      ) : hasSearched && !isSearching && searchText.length >= MIN_SEARCH_QUERY_LENGTH ? (
         <View style={styles.statusContainer}>
           <Text style={styles.emptyText}>No matching places found</Text>
         </View>
