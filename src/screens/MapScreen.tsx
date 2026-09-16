@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   StatusBar,
+  Text,
   TouchableOpacity,
   AppState,
   Alert,
@@ -896,7 +897,7 @@ export default function MapScreen() {
         onSelectSavedPlace={handleSelectSavedPlace}
       />
 
-      {areOfflinePacksRestored ? (
+      {areOfflinePacksRestored && (hasValidLocationFix || locationError) ? (
         <Map
           style={styles.map}
           mapStyle={mapStyleUrl}
@@ -976,6 +977,7 @@ export default function MapScreen() {
       ) : (
         <View style={styles.mapLoading}>
           <ActivityIndicator size="large" color="#1A73E8" />
+          <Text style={styles.mapLoadingText}>Getting your location...</Text>
         </View>
       )}
 
@@ -1073,6 +1075,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#EEF3F8',
+  },
+  mapLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#5F6368',
   },
   nearbyMarker: {
     alignItems: 'center',

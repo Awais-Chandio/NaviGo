@@ -103,6 +103,7 @@ export function watchLocationUpdates(
   activeWatchToken = watchToken;
   lastEmittedLocation = null;
   let inaccurateFixCount = 0;
+  let consecutiveJumpCount = 0;
 
   const watchInterval = options?.interval ?? LOCATION_CONFIG.NORMAL_LOCATION_INTERVAL;
   const watchFastest = options?.fastestInterval ?? Math.round(watchInterval / 2);
@@ -172,14 +173,23 @@ export function watchLocationUpdates(
           );
 
           if (isJump) {
-            logger.warn(TAG, 'Rejected implausible GPS jump.', {
-              accuracyMeters: newLoc.accuracy,
-              timestamp: newLoc.timestamp,
-            });
-            return;
+            consecutiveJumpCount += 1;
+            // A single implausible jump is treated as GPS noise and dropped.
+            // But if the device keeps reporting the same distant fix, it is
+            // a genuine relocation (flight landing, emulator mock location,
+            // GPS chip re-lock) rather than noise, so it must be accepted
+            // instead of leaving the user stranded on a stale fix forever.
+            if (consecutiveJumpCount < 3) {
+              logger.warn(TAG, 'Rejected implausible GPS jump.', {
+                accuracyMeters: newLoc.accuracy,
+                timestamp: newLoc.timestamp,
+              });
+              return;
+            }
           }
         }
 
+        consecutiveJumpCount = 0;
         lastEmittedLocation = newLoc;
         logger.debug(TAG, 'Accepted location update.', {
           accuracyMeters: newLoc.accuracy,
