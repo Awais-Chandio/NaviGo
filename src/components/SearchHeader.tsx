@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { geocodingService } from '../services/geocodingService';
+import { roadDistanceService } from '../services/RoadDistanceService';
 import { type SearchPlaceItem, MIN_SEARCH_QUERY_LENGTH } from '../services/searchService';
 import { SavedPlace } from '../services/storageService';
 import { NavigationState } from '../hooks/useNavigation';
@@ -22,6 +23,7 @@ import {
   isValidCoordinate,
 } from '../utils/locationUtils';
 import { LOCATION_CONFIG } from '../config/locationConfig';
+import { logger } from '../utils/logger';
 
 interface SearchHeaderProps {
   userLocation: { latitude: number; longitude: number };
@@ -49,23 +51,7 @@ function withoutDistance(item: SearchPlaceItem): SearchPlaceItem {
   };
 }
 
-function withDistanceFromOrigin(
-  item: SearchPlaceItem,
-  latitude: number,
-  longitude: number,
-): SearchPlaceItem {
-  if (!isValidCoordinate(item.latitude, item.longitude, true)) {
-    return withoutDistance(item);
-  }
-  const distance = Math.round(
-    getHaversineDistance(latitude, longitude, item.latitude, item.longitude),
-  );
-  return {
-    ...item,
-    distanceMeters: distance,
-    formattedDistance: formatDistance(distance),
-  };
-}
+const ROAD_DISTANCE_REFRESH_THRESHOLD_METERS = 50;
 
 const SearchResultCardItem = React.memo(({
   item,
@@ -143,6 +129,12 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  const recentDistanceAbortRef = useRef<AbortController | null>(null);
+  const lastRecentDistanceRequestRef = useRef<{
+    latitude: number;
+    longitude: number;
+    signature: string;
+  } | null>(null);
   const previousSetupTypeRef = useRef<'home' | 'work' | null>(null);
   const userLatitude = userLocation.latitude;
   const userLongitude = userLocation.longitude;
@@ -155,26 +147,109 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       if (searchAbortRef.current) {
         searchAbortRef.current.abort();
       }
+      recentDistanceAbortRef.current?.abort();
     };
   }, []);
 
   useEffect(() => {
-    const withoutStaleDistances = recentSearches.map(withoutDistance);
+    setCurrentRecentSearches(recentSearches.map(withoutDistance));
+    lastRecentDistanceRequestRef.current = null;
+  }, [recentSearches]);
 
+  useEffect(() => {
+    if (!isFocused) {
+      if (recentDistanceAbortRef.current) {
+        recentDistanceAbortRef.current.abort();
+        recentDistanceAbortRef.current = null;
+        lastRecentDistanceRequestRef.current = null;
+      }
+      return;
+    }
     if (
       recentSearches.length === 0 ||
       !hasLocationFix ||
       !isValidCoordinate(userLatitude, userLongitude, true)
     ) {
-      setCurrentRecentSearches(withoutStaleDistances);
+      setCurrentRecentSearches(recentSearches.map(withoutDistance));
       return;
     }
 
-    const withCurrentDirectDistances = recentSearches.map(item =>
-      withDistanceFromOrigin(item, userLatitude, userLongitude),
-    );
-    setCurrentRecentSearches(withCurrentDirectDistances);
-  }, [hasLocationFix, recentSearches, userLatitude, userLongitude]);
+    const signature = recentSearches
+      .map(item => `${item.id}:${item.latitude}:${item.longitude}`)
+      .join('|');
+    const previousRequest = lastRecentDistanceRequestRef.current;
+    if (
+      previousRequest?.signature === signature &&
+      getHaversineDistance(
+        previousRequest.latitude,
+        previousRequest.longitude,
+        userLatitude,
+        userLongitude,
+      ) < ROAD_DISTANCE_REFRESH_THRESHOLD_METERS
+    ) {
+      return;
+    }
+
+    recentDistanceAbortRef.current?.abort();
+    const controller = new AbortController();
+    recentDistanceAbortRef.current = controller;
+    lastRecentDistanceRequestRef.current = {
+      latitude: userLatitude,
+      longitude: userLongitude,
+      signature,
+    };
+    setCurrentRecentSearches(recentSearches.map(withoutDistance));
+
+    roadDistanceService
+      .getDrivingDistances(
+        { latitude: userLatitude, longitude: userLongitude },
+        recentSearches.map(item => ({
+          latitude: item.latitude,
+          longitude: item.longitude,
+        })),
+        controller.signal,
+      )
+      .then(distances => {
+        if (
+          controller.signal.aborted ||
+          recentDistanceAbortRef.current !== controller
+        ) {
+          return;
+        }
+        setCurrentRecentSearches(
+          recentSearches.map((item, index) => {
+            const distance = distances[index];
+            return typeof distance === 'number'
+              ? {
+                  ...item,
+                  distanceMeters: distance,
+                  formattedDistance: formatDistance(distance),
+                }
+              : withoutDistance(item);
+          }),
+        );
+      })
+      .catch(error => {
+        if (!controller.signal.aborted) {
+          logger.info(
+            'SearchHeader',
+            'Road distances for recent searches are unavailable.',
+            error,
+          );
+        }
+      })
+      .finally(() => {
+        if (recentDistanceAbortRef.current === controller) {
+          recentDistanceAbortRef.current = null;
+        }
+      });
+  }, [
+    hasLocationFix,
+    isFocused,
+    recentSearches,
+    userLatitude,
+    userLongitude,
+  ]);
 
   useEffect(() => {
     if (previousSetupTypeRef.current !== savedPlaceSetupType) {
@@ -214,7 +289,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         setSearchError('Waiting for your current location. Enable location to search nearby.');
         return;
       }
-      const results = await geocodingService.searchPlaces(text, {
+      const directDistanceResults = await geocodingService.searchPlaces(text, {
         userLocation: locationToUse,
         countryCode,
         radiusMeters: LOCATION_CONFIG.TYPED_SEARCH_RADIUS_METERS,
@@ -229,7 +304,46 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         return;
       }
       setIsSearching(false);
+      const results = directDistanceResults.map(withoutDistance);
       setSearchResults(results);
+
+      if (results.length > 0) {
+        try {
+          const distances = await roadDistanceService.getDrivingDistances(
+            locationToUse,
+            results.map(item => ({
+              latitude: item.latitude,
+              longitude: item.longitude,
+            })),
+            controller.signal,
+          );
+          if (
+            !controller.signal.aborted &&
+            searchAbortRef.current === controller
+          ) {
+            setSearchResults(
+              results.map((item, index) => {
+                const distance = distances[index];
+                return typeof distance === 'number'
+                  ? {
+                      ...item,
+                      distanceMeters: distance,
+                      formattedDistance: formatDistance(distance),
+                    }
+                  : item;
+              }),
+            );
+          }
+        } catch (distanceError) {
+          if (!controller.signal.aborted) {
+            logger.info(
+              'SearchHeader',
+              'Road distances for search results are unavailable.',
+              distanceError,
+            );
+          }
+        }
+      }
     } catch (err) {
       if (
         err &&

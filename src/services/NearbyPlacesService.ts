@@ -141,7 +141,6 @@ export class NearbyPlacesService {
       return [];
     }
     let places: NearbyPlace[] = [];
-    let usedSearchFallback = false;
     let primarySucceeded = false;
     let primaryError: unknown;
     try {
@@ -169,7 +168,6 @@ export class NearbyPlacesService {
         const fallbackPlaces = await this.searchWithFallback(params, signal);
         if (fallbackPlaces.length > 0) {
           places = fallbackPlaces;
-          usedSearchFallback = true;
           onPartialResults?.(this.normalizePlaces(places, params));
         }
       } catch (fallbackError) {
@@ -192,9 +190,6 @@ export class NearbyPlacesService {
     if (places.length === 0) {
       return places;
     }
-    if (usedSearchFallback) {
-      return places;
-    }
     if (
       params.includeRoadDistance === false ||
       connectivityService.getMode() === 'offline'
@@ -203,29 +198,26 @@ export class NearbyPlacesService {
     }
 
     try {
-      const topPlace = places[0];
-      const [roadDistance] =
+      const roadDistances =
         await this.drivingDistanceProvider.getDrivingDistances(
           { latitude: params.latitude, longitude: params.longitude },
-          [
-            {
-              latitude: topPlace.latitude,
-              longitude: topPlace.longitude,
-            },
-          ],
+          places.map(place => ({
+            latitude: place.latitude,
+            longitude: place.longitude,
+          })),
           signal,
         );
 
-      if (typeof roadDistance !== 'number') return places;
-      return places.map((place, index) =>
-        index === 0
+      return places.map((place, index) => {
+        const roadDistance = roadDistances[index];
+        return typeof roadDistance === 'number'
           ? {
               ...place,
               roadDistance,
               formattedRoadDistance: formatDistance(roadDistance),
             }
-          : place,
-      );
+          : place;
+      });
     } catch (error) {
       if (isCallerAbort(error, signal)) throw error;
       logger.info(

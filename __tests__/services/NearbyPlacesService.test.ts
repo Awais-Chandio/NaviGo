@@ -45,7 +45,7 @@ describe('NearbyPlacesService', () => {
     expect(results[1].formattedDistance).toMatch(/^\d+\.\d km$/);
   });
 
-  it('keeps Haversine distance for every result and enriches only the top result with road distance', async () => {
+  it('keeps Haversine ranking distance and enriches every result with road distance', async () => {
     const repository: INearbyPlacesRepository = {
       searchNearby: jest.fn().mockResolvedValue([
         {
@@ -87,13 +87,17 @@ describe('NearbyPlacesService', () => {
     ]);
     expect(roadProvider.getDrivingDistances).toHaveBeenCalledWith(
       { latitude: 25.396, longitude: 68.3578 },
-      [{ latitude: 25.4, longitude: 68.36 }],
+      [
+        { latitude: 25.4, longitude: 68.36 },
+        { latitude: 25.41, longitude: 68.37 },
+      ],
       undefined,
     );
     expect(results[0].roadDistance).toBe(2200);
     expect(results[0].formattedRoadDistance).toBe('2.2 km');
     expect(results[0].distance).toBeLessThan(results[1].distance);
-    expect(results[1].roadDistance).toBeUndefined();
+    expect(results[1].roadDistance).toBe(900);
+    expect(results[1].formattedRoadDistance).toBe('900 m');
   });
 
   it('uses the shared ranking model to prefer complete nearby POIs when distance is similar', async () => {
@@ -310,7 +314,7 @@ describe('NearbyPlacesService', () => {
       searchNearby: jest.fn().mockRejectedValue(new Error('Overpass timeout')),
     };
     const roadProvider: DrivingDistanceProvider = {
-      getDrivingDistances: jest.fn(),
+      getDrivingDistances: jest.fn().mockResolvedValue([840]),
     };
     const fallbackProvider = {
       searchPlaces: jest.fn().mockResolvedValue([
@@ -347,7 +351,13 @@ describe('NearbyPlacesService', () => {
     expect(results[0].distance).toBeGreaterThan(100);
     expect(results[0].distance).toBeLessThan(130);
     expect(results[0].formattedDistance).toBe(`${results[0].distance} m`);
-    expect(roadProvider.getDrivingDistances).not.toHaveBeenCalled();
+    expect(roadProvider.getDrivingDistances).toHaveBeenCalledWith(
+      { latitude: 25.396, longitude: 68.3578 },
+      [{ latitude: 25.397, longitude: 68.358 }],
+      undefined,
+    );
+    expect(results[0].roadDistance).toBe(840);
+    expect(results[0].formattedRoadDistance).toBe('840 m');
   });
 
   it('returns empty array when GPS coordinates are missing or invalid', async () => {

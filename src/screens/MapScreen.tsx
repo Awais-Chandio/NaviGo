@@ -65,6 +65,7 @@ import PersonPinCircle from '../assets/icons/personPinCircle.svg';
 
 export default function MapScreen() {
   const cameraRef = useRef<CameraRef>(null);
+  const isMapReadyRef = useRef<boolean>(false);
   const followResumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -72,6 +73,7 @@ export default function MapScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFollowingUser, setIsFollowingUser] = useState<boolean>(true);
   const [currentZoom, setCurrentZoom] = useState<number>(15);
+  const [isMapReady, setIsMapReady] = useState<boolean>(false);
   const [mapStyleUrl, setMapStyleUrl] = useState<string>(
     mapService.getActiveStyleUrl(),
   );
@@ -135,6 +137,65 @@ export default function MapScreen() {
   } = useLocation(isNavigating);
   const { recentSearches, savedPlaces, addRecentSearch, savePlace } =
     useSavedPlaces();
+
+  const handleCameraRef = useCallback((camera: CameraRef | null) => {
+    cameraRef.current = camera;
+    if (!camera) {
+      isMapReadyRef.current = false;
+    }
+  }, []);
+
+  const handleMapLoading = useCallback(() => {
+    isMapReadyRef.current = false;
+    setIsMapReady(false);
+  }, []);
+
+  const handleMapReady = useCallback(() => {
+    // Camera commands are Fabric native-module calls. Waiting for the map load
+    // event prevents commands from targeting a Camera view whose reactTag has
+    // not been registered yet.
+    isMapReadyRef.current = true;
+    setIsMapReady(true);
+  }, []);
+
+  const runCameraCommand = useCallback(
+    (name: string, command: (camera: CameraRef) => unknown): boolean => {
+      const camera = cameraRef.current;
+      if (!camera || !isMapReadyRef.current) {
+        return false;
+      }
+
+      try {
+        // MapLibre types these commands as void, but its Android native module
+        // returns a Promise. Always observe that Promise so an in-flight screen
+        // unmount or style reload cannot become an unhandled rejection.
+        const result = command(camera);
+        if (
+          result !== null &&
+          typeof result === 'object' &&
+          'then' in result &&
+          typeof (result as PromiseLike<unknown>).then === 'function'
+        ) {
+          Promise.resolve(result).catch(error => {
+            logger.info(
+              'MapCamera',
+              `${name} skipped because the native map became unavailable.`,
+              error,
+            );
+          });
+        }
+        return true;
+      } catch (error) {
+        logger.info(
+          'MapCamera',
+          `${name} skipped because the native map is not ready.`,
+          error,
+        );
+        return false;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -226,9 +287,9 @@ export default function MapScreen() {
           longitude: location.longitude,
           category: activeCategoryConfig.category,
           countryCode: detectedCountryCode || undefined,
-          // Render places after the first API response instead of waiting for
-          // a second road-distance matrix request.
-          includeRoadDistance: false,
+          // Distances shown beside results must match the driving route rather
+          // than the much shorter straight-line separation.
+          includeRoadDistance: true,
         },
         controller.signal,
         partialResults => {
@@ -347,12 +408,7 @@ export default function MapScreen() {
             location.longitude,
           )
         : nearbyPlaces,
-    [
-      hasValidLocationFix,
-      location.latitude,
-      location.longitude,
-      nearbyPlaces,
-    ],
+    [hasValidLocationFix, location.latitude, location.longitude, nearbyPlaces],
   );
 
   useEffect(() => {
@@ -406,7 +462,7 @@ export default function MapScreen() {
   const lastCameraUpdateTsRef = useRef<number>(0);
 
   useEffect(() => {
-    if (isFollowingUser && cameraRef.current && hasValidLocationFix) {
+    if (isFollowingUser && isMapReady && hasValidLocationFix) {
       const targetLat =
         navigationState === 'navigating' ? markerLat : location.latitude;
       const targetLng =
@@ -473,18 +529,22 @@ export default function MapScreen() {
           }
         }
 
-        cameraRef.current.easeTo({
-          center: cameraCenter,
-          zoom: targetZoom,
-          pitch: targetPitch,
-          bearing: targetBearing,
-          duration: 650,
-        });
+        runCameraCommand('follow navigation position', camera =>
+          camera.easeTo({
+            center: cameraCenter,
+            zoom: targetZoom,
+            pitch: targetPitch,
+            bearing: targetBearing,
+            duration: 650,
+          }),
+        );
       } else {
-        cameraRef.current.easeTo({
-          center: [targetLng, targetLat],
-          duration: 500,
-        });
+        runCameraCommand('follow current position', camera =>
+          camera.easeTo({
+            center: [targetLng, targetLat],
+            duration: 500,
+          }),
+        );
       }
     }
   }, [
@@ -492,27 +552,31 @@ export default function MapScreen() {
     destination,
     hasValidLocationFix,
     isFollowingUser,
+    isMapReady,
     location.latitude,
     location.longitude,
     markerLat,
     markerLng,
     navigationState,
+    runCameraCommand,
   ]);
 
   useEffect(() => {
     if (
       navigationState === 'route_ready' &&
       routeDetails?.coordinates &&
-      cameraRef.current
+      isMapReady
     ) {
       const bounds = calculateBoundingBox(routeDetails.coordinates);
-      cameraRef.current.fitBounds(bounds, {
-        padding: { top: 100, right: 60, bottom: 240, left: 60 },
-        duration: 1200,
-      });
+      runCameraCommand('fit route', camera =>
+        camera.fitBounds(bounds, {
+          padding: { top: 100, right: 60, bottom: 240, left: 60 },
+          duration: 1200,
+        }),
+      );
       setIsFollowingUser(false);
     }
-  }, [navigationState, routeDetails]);
+  }, [isMapReady, navigationState, routeDetails, runCameraCommand]);
 
   const handleMapTouch = useCallback(() => {
     if (isFollowingUser) {
@@ -571,13 +635,13 @@ export default function MapScreen() {
 
       addRecentSearch(item);
 
-      if (cameraRef.current) {
-        cameraRef.current.easeTo({
+      runCameraCommand('show selected place', camera =>
+        camera.easeTo({
           center: [item.longitude, item.latitude],
           zoom: 16,
           duration: 800,
-        });
-      }
+        }),
+      );
       setIsFollowingUser(false);
 
       if (!hasValidLocationFix) {
@@ -601,6 +665,7 @@ export default function MapScreen() {
       savedPlaceSetupType,
       savePlace,
       selectDestination,
+      runCameraCommand,
     ],
   );
 
@@ -689,13 +754,13 @@ export default function MapScreen() {
             {
               text: 'Navigate',
               onPress: () => {
-                if (cameraRef.current) {
-                  cameraRef.current.easeTo({
+                runCameraCommand('show saved place', camera =>
+                  camera.easeTo({
                     center: [savedPlace.longitude, savedPlace.latitude],
                     zoom: 16,
                     duration: 1000,
-                  });
-                }
+                  }),
+                );
                 setIsFollowingUser(false);
                 if (!hasValidLocationFix) {
                   setErrorMessage(
@@ -729,6 +794,7 @@ export default function MapScreen() {
       selectedCategory,
       location.latitude,
       location.longitude,
+      runCameraCommand,
       selectDestination,
     ],
   );
@@ -739,17 +805,20 @@ export default function MapScreen() {
     setActiveCategoryConfig(null);
   }, []);
 
-  const handleSelectNearbyPlace = useCallback((place: NearbyPlace) => {
-    setSelectedNearbyPlaceId(place.id);
-    if (cameraRef.current) {
-      cameraRef.current.easeTo({
-        center: [place.longitude, place.latitude],
-        zoom: 16,
-        duration: 800,
-      });
-    }
-    setIsFollowingUser(false);
-  }, []);
+  const handleSelectNearbyPlace = useCallback(
+    (place: NearbyPlace) => {
+      setSelectedNearbyPlaceId(place.id);
+      runCameraCommand('show nearby place', camera =>
+        camera.easeTo({
+          center: [place.longitude, place.latitude],
+          zoom: 16,
+          duration: 800,
+        }),
+      );
+      setIsFollowingUser(false);
+    },
+    [runCameraCommand],
+  );
 
   const handleCloseNearbyCard = useCallback(() => {
     setSelectedCategory(null);
@@ -764,13 +833,13 @@ export default function MapScreen() {
 
   const handleNavigateToNearbyPlace = useCallback(
     (place: NearbyPlace) => {
-      if (cameraRef.current) {
-        cameraRef.current.easeTo({
+      runCameraCommand('show nearby destination', camera =>
+        camera.easeTo({
           center: [place.longitude, place.latitude],
           zoom: 16,
           duration: 800,
-        });
-      }
+        }),
+      );
       setIsFollowingUser(false);
 
       if (!hasValidLocationFix) {
@@ -792,21 +861,22 @@ export default function MapScreen() {
       hasValidLocationFix,
       location.latitude,
       location.longitude,
+      runCameraCommand,
       selectDestination,
     ],
   );
 
   const handleResetCompass = useCallback(() => {
-    if (cameraRef.current) {
-      cameraRef.current.easeTo({
+    runCameraCommand('reset compass', camera =>
+      camera.easeTo({
         center: [location.longitude, location.latitude],
         zoom: currentZoom,
         pitch: 0,
         bearing: 0,
         duration: 1000,
-      });
-    }
-  }, [currentZoom, location.latitude, location.longitude]);
+      }),
+    );
+  }, [currentZoom, location.latitude, location.longitude, runCameraCommand]);
 
   const handleRecenter = useCallback(() => {
     if (!hasValidLocationFix) return;
@@ -815,46 +885,47 @@ export default function MapScreen() {
       followResumeTimerRef.current = null;
     }
     setIsFollowingUser(true);
-    if (cameraRef.current) {
-      cameraRef.current.flyTo({
+    runCameraCommand('recenter', camera =>
+      camera.flyTo({
         center: [location.longitude, location.latitude],
         zoom: navigationState === 'navigating' ? 17.5 : 15,
         pitch: navigationState === 'navigating' ? 50 : 0,
         bearing: navigationState === 'navigating' ? currentBearing : 0,
         duration: 1000,
-      });
-    }
+      }),
+    );
   }, [
     currentBearing,
     hasValidLocationFix,
     location.latitude,
     location.longitude,
     navigationState,
+    runCameraCommand,
   ]);
 
   const handleZoomIn = useCallback(() => {
     const nextZoom = Math.min(currentZoom + 1, 20);
     setCurrentZoom(nextZoom);
-    if (cameraRef.current) {
-      cameraRef.current.easeTo({
+    runCameraCommand('zoom in', camera =>
+      camera.easeTo({
         center: [location.longitude, location.latitude],
         zoom: nextZoom,
         duration: 300,
-      });
-    }
-  }, [currentZoom, location.latitude, location.longitude]);
+      }),
+    );
+  }, [currentZoom, location.latitude, location.longitude, runCameraCommand]);
 
   const handleZoomOut = useCallback(() => {
     const nextZoom = Math.max(currentZoom - 1, 2);
     setCurrentZoom(nextZoom);
-    if (cameraRef.current) {
-      cameraRef.current.easeTo({
+    runCameraCommand('zoom out', camera =>
+      camera.easeTo({
         center: [location.longitude, location.latitude],
         zoom: nextZoom,
         duration: 300,
-      });
-    }
-  }, [currentZoom, location.latitude, location.longitude]);
+      }),
+    );
+  }, [currentZoom, location.latitude, location.longitude, runCameraCommand]);
 
   const showNearbyCard =
     selectedCategory !== null &&
@@ -901,6 +972,10 @@ export default function MapScreen() {
         <Map
           style={styles.map}
           mapStyle={mapStyleUrl}
+          onWillStartLoadingMap={handleMapLoading}
+          onDidFinishLoadingMap={handleMapReady}
+          onDidFinishLoadingStyle={handleMapReady}
+          onDidFailLoadingMap={handleMapLoading}
           onTouchStart={handleMapTouch}
           onRegionDidChange={handleRegionDidChange}
         >
@@ -927,7 +1002,7 @@ export default function MapScreen() {
           )}
 
           <Camera
-            ref={cameraRef}
+            ref={handleCameraRef}
             initialViewState={{
               zoom: hasValidLocationFix ? currentZoom : 2,
               center: [markerLng, markerLat],

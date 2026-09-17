@@ -64,6 +64,17 @@ def hasReleaseSigning = [
     "NAVIGO_UPLOAD_KEY_ALIAS",
     "NAVIGO_UPLOAD_KEY_PASSWORD",
 ].every { project.hasProperty(it) }
+def releaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.toLowerCase().contains("release")
+}
+
+if (releaseBuildRequested && !hasReleaseSigning) {
+    throw new GradleException(
+        "Release signing is not configured. Provide NAVIGO_UPLOAD_STORE_FILE, " +
+        "NAVIGO_UPLOAD_STORE_PASSWORD, NAVIGO_UPLOAD_KEY_ALIAS, and " +
+        "NAVIGO_UPLOAD_KEY_PASSWORD as Gradle properties."
+    )
+}
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -110,9 +121,13 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+            manifestPlaceholders = [usesCleartextTraffic: "true"]
         }
         release {
-            signingConfig (hasReleaseSigning ? signingConfigs.release : signingConfigs.debug)
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            manifestPlaceholders = [usesCleartextTraffic: "false"]
             minifyEnabled enableProguardInReleaseBuilds
             shrinkResources enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"

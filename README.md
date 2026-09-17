@@ -52,12 +52,18 @@ npm run ios
 
 ```sh
 npm run verify
+npm run android:lint
 cd android && ./gradlew app:assembleDebug
 ```
 
 Release builds require Android signing properties named
 `NAVIGO_UPLOAD_STORE_FILE`, `NAVIGO_UPLOAD_STORE_PASSWORD`,
-`NAVIGO_UPLOAD_KEY_ALIAS`, and `NAVIGO_UPLOAD_KEY_PASSWORD`.
+`NAVIGO_UPLOAD_KEY_ALIAS`, and `NAVIGO_UPLOAD_KEY_PASSWORD`. Release tasks fail
+closed when any property is missing; they never fall back to the debug key.
+Use `npm run build:aab` for the Play Store artifact after configuring them.
+
+Before a store submission, complete [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
+and replace every bracketed field in [docs/PRIVACY_POLICY.md](docs/PRIVACY_POLICY.md).
 
 ## External services
 

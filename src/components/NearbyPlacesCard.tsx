@@ -37,6 +37,11 @@ const NearbyPlaceItemCard = React.memo(({
   onSelect: (place: NearbyPlace) => void;
   onNavigate: (place: NearbyPlace) => void;
 }) => {
+  const displayDistance =
+    typeof item.roadDistance === 'number'
+      ? formatDistance(item.roadDistance)
+      : undefined;
+
   return (
     <TouchableOpacity
       style={[styles.placeItem, isSelected && styles.selectedPlaceItem]}
@@ -47,9 +52,9 @@ const NearbyPlaceItemCard = React.memo(({
         <Text style={styles.placeName} numberOfLines={1}>
           {item.name}
         </Text>
-        <Text style={styles.distanceText}>
-          {formatDistance(item.distance)} away
-        </Text>
+        {displayDistance ? (
+          <Text style={styles.distanceText}>{displayDistance} by road</Text>
+        ) : null}
         {!!item.address && (
           <Text style={styles.addressText} numberOfLines={1}>
             {item.address}
