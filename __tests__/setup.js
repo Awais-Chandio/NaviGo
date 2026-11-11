@@ -81,3 +81,11 @@ jest.mock('react-native-permissions', () => ({
     }),
   ),
 }));
+
+// Unit tests must never reach real servers (Overpass, OSRM, Photon, ...).
+// Tests that need a response install their own fetch mock and restore this one.
+beforeEach(() => {
+  global.fetch = jest.fn(() =>
+    Promise.reject(new Error('Network access is disabled in unit tests.')),
+  );
+});

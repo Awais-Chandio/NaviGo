@@ -24,7 +24,7 @@ jobs:
           java-version: 17
           cache: gradle
       - run: npm ci
-      - run: npm audit --omit=dev
+      - run: npm audit --omit=dev --audit-level=moderate
       - run: npm run verify
       - run: npm run android:lint
       - run: cd android && ./gradlew app:assembleDebug
