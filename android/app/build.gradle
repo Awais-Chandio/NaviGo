@@ -58,12 +58,23 @@ react {
  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
  */
 def enableProguardInReleaseBuilds = true
+// Release signing secrets come from android/keystore.properties (git-ignored,
+// see android/keystore.properties.example). When that file is absent (e.g. CI),
+// Gradle properties (~/.gradle/gradle.properties or -P flags) are used instead.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+def signingProperty = { String name ->
+    keystoreProperties.getProperty(name) ?: (project.hasProperty(name) ? project.property(name) : null)
+}
 def hasReleaseSigning = [
     "NAVIGO_UPLOAD_STORE_FILE",
     "NAVIGO_UPLOAD_STORE_PASSWORD",
     "NAVIGO_UPLOAD_KEY_ALIAS",
     "NAVIGO_UPLOAD_KEY_PASSWORD",
-].every { project.hasProperty(it) }
+].every { signingProperty(it) }
 def releaseBuildRequested = gradle.startParameter.taskNames.any {
     it.toLowerCase().contains("release")
 }
@@ -72,7 +83,7 @@ if (releaseBuildRequested && !hasReleaseSigning) {
     throw new GradleException(
         "Release signing is not configured. Provide NAVIGO_UPLOAD_STORE_FILE, " +
         "NAVIGO_UPLOAD_STORE_PASSWORD, NAVIGO_UPLOAD_KEY_ALIAS, and " +
-        "NAVIGO_UPLOAD_KEY_PASSWORD as Gradle properties."
+        "NAVIGO_UPLOAD_KEY_PASSWORD in android/keystore.properties or as Gradle properties."
     )
 }
 
@@ -111,10 +122,10 @@ android {
         }
         if (hasReleaseSigning) {
             release {
-                storeFile file(project.property("NAVIGO_UPLOAD_STORE_FILE"))
-                storePassword project.property("NAVIGO_UPLOAD_STORE_PASSWORD")
-                keyAlias project.property("NAVIGO_UPLOAD_KEY_ALIAS")
-                keyPassword project.property("NAVIGO_UPLOAD_KEY_PASSWORD")
+                storeFile file(signingProperty("NAVIGO_UPLOAD_STORE_FILE"))
+                storePassword signingProperty("NAVIGO_UPLOAD_STORE_PASSWORD")
+                keyAlias signingProperty("NAVIGO_UPLOAD_KEY_ALIAS")
+                keyPassword signingProperty("NAVIGO_UPLOAD_KEY_PASSWORD")
             }
         }
     }

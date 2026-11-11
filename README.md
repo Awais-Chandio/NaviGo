@@ -1,5 +1,8 @@
 # NaviGo
 
+[![CI](https://github.com/Awais-Chandio/NaviGo/actions/workflows/ci.yml/badge.svg)](https://github.com/Awais-Chandio/NaviGo/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Awais-Chandio/NaviGo)](https://github.com/Awais-Chandio/NaviGo/releases/latest)
+
 Turn-by-turn navigation for Android, built with React Native and TypeScript
 on open map data only: MapLibre vector maps, OpenStreetMap search, OSRM
 routing and offline map packs. No Google Maps or Mapbox API keys are needed.
@@ -38,11 +41,12 @@ location in Clifton, Karachi.</sub>
 
 ## Try it
 
-NaviGo runs on Android (minSdk 24). An installable APK will be published on
-the [Releases](https://github.com/Awais-Chandio/NaviGo/releases) page; until
-then, build it from source with the steps under [Setup](#setup). Allow
-precise location when the app asks; search, nearby places and routing all
-start from your live GPS position.
+NaviGo runs on Android 7.0+ (minSdk 24).
+[Download the latest APK](https://github.com/Awais-Chandio/NaviGo/releases/latest/download/NaviGo-v1.0.0.apk)
+from [Releases](https://github.com/Awais-Chandio/NaviGo/releases/latest),
+allow *Install unknown apps* when Android asks, and allow precise location
+when the app opens; search, nearby places and routing all start from your
+live GPS position. To build it yourself, follow [Setup](#setup).
 
 ## Tech stack
 
@@ -105,9 +109,12 @@ cd android && ./gradlew app:assembleDebug
 
 Release builds require Android signing properties named
 `NAVIGO_UPLOAD_STORE_FILE`, `NAVIGO_UPLOAD_STORE_PASSWORD`,
-`NAVIGO_UPLOAD_KEY_ALIAS`, and `NAVIGO_UPLOAD_KEY_PASSWORD`. Release tasks fail
-closed when any property is missing; they never fall back to the debug key.
-Use `npm run build:aab` for the Play Store artifact after configuring them.
+`NAVIGO_UPLOAD_KEY_ALIAS`, and `NAVIGO_UPLOAD_KEY_PASSWORD`. Copy
+[android/keystore.properties.example](android/keystore.properties.example) to
+`android/keystore.properties` (git-ignored) and fill it in, or pass them as
+Gradle properties. Release tasks fail closed when any property is missing;
+they never fall back to the debug key. Then run `npm run build:apk` for an
+installable APK or `npm run build:aab` for the Play Store artifact.
 
 Before a store submission, complete [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
 and replace every bracketed field in [docs/PRIVACY_POLICY.md](docs/PRIVACY_POLICY.md).
