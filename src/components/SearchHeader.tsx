@@ -405,8 +405,20 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const handleSelectItem = useCallback((item: SearchPlaceItem) => {
     Keyboard.dismiss();
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
     setSearchText(item.title);
     setSearchResults([]);
+    // The selected title stays in the input, so the previous search must be
+    // marked finished; otherwise the "No matching places found" empty state
+    // renders over the route preview.
+    setIsSearching(false);
+    setHasSearched(false);
+    setSearchError(null);
     setIsFocused(false);
     onSelectPlace(item);
   }, [onSelectPlace]);

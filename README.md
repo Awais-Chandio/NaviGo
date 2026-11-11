@@ -1,8 +1,55 @@
 # NaviGo
 
-NaviGo is a React Native CLI and TypeScript navigation application using
-MapLibre, OpenFreeMap/OpenStreetMap data, Photon search, Overpass nearby
-queries, OSRM driving routes, GPS tracking, and MapLibre offline tile packs.
+Turn-by-turn navigation for Android, built with React Native and TypeScript
+on open map data only: MapLibre vector maps, OpenStreetMap search, OSRM
+routing and offline map packs. No Google Maps or Mapbox API keys are needed.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/01-map-home.jpg" width="200" alt="Live location on the map"><br><sub>Live location on the map</sub></td>
+    <td align="center"><img src="docs/screenshots/02-search.jpg" width="200" alt="Instant place search"><br><sub>Instant place search</sub></td>
+    <td align="center"><img src="docs/screenshots/03-search-results.jpg" width="200" alt="Results with road distances"><br><sub>Results with road distances</sub></td>
+    <td align="center"><img src="docs/screenshots/04-nearby-food.jpg" width="200" alt="Nearby places by category"><br><sub>Nearby places by category</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/05-route-preview.jpg" width="200" alt="Route preview with ETA"><br><sub>Route preview with ETA</sub></td>
+    <td align="center"><img src="docs/screenshots/06-navigation.jpg" width="200" alt="Turn-by-turn live navigation"><br><sub>Turn-by-turn live navigation</sub></td>
+    <td align="center"><img src="docs/screenshots/07-offline-maps.jpg" width="200" alt="Offline map downloads"><br><sub>Offline map downloads</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+<sub>Screenshots: Android release build on an emulator with a simulated GPS
+location in Clifton, Karachi.</sub>
+
+## Features
+
+- Live GPS location with an accuracy circle and a follow / recenter camera
+- Place search with autocomplete from the first character, limited to 25 km
+  around you, with driving distance for every result
+- One-tap nearby search across 11 categories (food, cafe, ATM, fuel,
+  hospital, pharmacy, parking and more)
+- Route preview with up to 3 OSRM alternatives and walk / bike / car ETA
+- Turn-by-turn navigation: 3D follow camera, next-turn card, remaining
+  distance, arrival time, live speed and native voice prompts
+- Automatic rerouting once you have clearly left the route
+- Offline map downloads for a 10 km area or a named city
+- Saved Home / Work places and recent searches
+
+## Try it
+
+NaviGo runs on Android (minSdk 24). An installable APK will be published on
+the [Releases](https://github.com/Awais-Chandio/NaviGo/releases) page; until
+then, build it from source with the steps under [Setup](#setup). Allow
+precise location when the app asks; search, nearby places and routing all
+start from your live GPS position.
+
+## Tech stack
+
+React Native 0.86 (CLI) · React 19 · TypeScript · MapLibre React Native 11 ·
+OpenFreeMap tiles · OSRM · Photon · Nominatim · Overpass API ·
+react-native-geolocation-service · react-native-permissions ·
+react-native-tts · AsyncStorage · Jest · GitHub Actions
 
 ## Architecture
 

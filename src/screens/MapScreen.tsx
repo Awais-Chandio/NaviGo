@@ -139,10 +139,12 @@ export default function MapScreen() {
     useSavedPlaces();
 
   const handleCameraRef = useCallback((camera: CameraRef | null) => {
+    // MapLibre's Camera rebuilds its imperative handle on every render, so
+    // React calls this ref with null and then the new handle on each re-render.
+    // Map readiness must therefore come only from the map load events; clearing
+    // it here left every camera command (fit route, zoom, recenter, navigation
+    // follow) silently skipped after the first re-render.
     cameraRef.current = camera;
-    if (!camera) {
-      isMapReadyRef.current = false;
-    }
   }, []);
 
   const handleMapLoading = useCallback(() => {
@@ -570,7 +572,10 @@ export default function MapScreen() {
       const bounds = calculateBoundingBox(routeDetails.coordinates);
       runCameraCommand('fit route', camera =>
         camera.fitBounds(bounds, {
-          padding: { top: 100, right: 60, bottom: 240, left: 60 },
+          // Bottom padding clears the route alternatives card (~340 dp tall)
+          // and top padding clears the search header, so both ends of the
+          // route stay visible.
+          padding: { top: 130, right: 60, bottom: 360, left: 60 },
           duration: 1200,
         }),
       );
